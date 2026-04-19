@@ -84,6 +84,12 @@ The client must implement stubs for every RPC in `StatementService` and `EchoSer
 - Blocking stubs are used for synchronous operations; async stubs are required for client-streaming (`createLob`) and server-streaming (`executeQuery`, `readLob`) RPCs.
 - Channel shutdown must be graceful (allow in-flight calls to complete) and must be triggered on client shutdown.
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`StatementService`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementService.java): the unified interface declaring all RPC methods (`connect`, `executeUpdate`, `executeQuery`, `fetchNextRows`, `createLob`, `readLob`, `terminateSession`, `startTransaction`, `commitTransaction`, `rollbackTransaction`, `callResource`, all XA operations).
+> - `ojp-jdbc-driver` — [`StatementServiceGrpcClient`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementServiceGrpcClient.java): the single-node gRPC implementation of `StatementService`; contains the concrete gRPC stub calls and the `grpcChannelOpenAndStubsInitialized()` channel lifecycle method.
+> - `ojp-jdbc-driver` — [`MultinodeStatementService`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeStatementService.java): the multinode façade that wraps `StatementServiceGrpcClient` per endpoint with routing, failover, and stickiness.
+> - `ojp-grpc-commons` — [`GrpcChannelFactory`](../../ojp-grpc-commons/src/main/java/org/openjproxy/grpc/GrpcChannelFactory.java): `createChannel(host, port)` / `createChannel(target)` — builds `ManagedChannel` instances with plaintext or TLS; handles the `dns:///` prefix and max inbound message size.
+
 ---
 
 ## 2. URL Parsing
@@ -117,6 +123,11 @@ All three parts are mandatory:
 | `jdbc:ojp[a:1059,b:1059]_h2:mem:test` | `a:1059`, `b:1059` | `default`, `default` | `h2:mem:test` |
 | `jdbc:ojp[a:1059(web),b:1059(analytics)]_postgresql://db/mydb` | `a:1059`, `b:1059` | `web`, `analytics` | `postgresql://db/mydb` |
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`MultinodeUrlParser`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeUrlParser.java): `parseServerEndpoints(url, dataSourceNames)` parses the bracket-enclosed endpoint list; `extractActualJdbcUrl(url)` strips the OJP prefix; `replaceBracketsWithSingleEndpoint(url, endpoint)` produces the single-endpoint URL forwarded to the server; `getOrCreateStatementService(url)` is the main entry point that ties parsing to channel creation.
+> - `ojp-jdbc-driver` — [`UrlParser`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/UrlParser.java): `parseUrlWithDataSource(url)` handles single-node URL parsing and datasource name extraction.
+> - `ojp-jdbc-driver` — [`Driver.connect(url, info)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Driver.java): the JDBC driver entry point that calls both parsers and dispatches to single-node or multinode paths.
+
 ---
 
 ## 3. Client Identity
@@ -127,6 +138,9 @@ All three parts are mandatory:
 - Attach `clientUUID` to every `ConnectionDetails` message sent to the server.
 - The server uses `clientUUID` to group all sessions from the same client process.
 - Do not persist `clientUUID` across process restarts; each new process should generate a fresh UUID.
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`ClientUUID`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/ClientUUID.java): `getUUID()` returns the static, process-scoped UUID that is generated once at class-loading time via `UUID.randomUUID()`.
 
 ---
 
@@ -171,6 +185,13 @@ When any gRPC call returns `Status.NOT_FOUND`, the server has lost its in-memory
 4. Retry the original failed operation once with the new `SessionInfo`.
 5. This retry is only safe if the original request had no active `sessionUUID` (no open transaction). If a session was in progress, surface the error to the caller — the transaction state is permanently lost.
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.connect()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): orchestrates first-connect vs. cache-hit logic; calls `connectToAllServers()` for the real RPC path and `buildLocalSessionInfo()` for the cache-hit path.
+> - `MultinodeConnectionManager.computeConnectionKey()`: builds the `url|user|password|datasourceName` cache key.
+> - `MultinodeConnectionManager.invalidateConnHash()`: removes the stale key from `connHashByConnectionKey` on `NOT_FOUND`.
+> - `MultinodeConnectionManager.reconnectForConnHash()`: re-issues the real `connect()` RPC using stored `ConnectionDetails` and updates the cache.
+> - `MultinodeConnectionManager.buildLocalSessionInfo()`: constructs the in-memory `SessionInfo` for cache-hit connections without an RPC call.
+
 ---
 
 ## 5. Session Management
@@ -195,6 +216,12 @@ When any gRPC call returns `Status.NOT_FOUND`, the server has lost its in-memory
 - On connection close: call `terminateSession(SessionInfo)`. This is mandatory for releasing server-side resources, especially in multinode deployments where multiple servers may hold pools.
 - If `sessionStatus == SESSION_TERMINATED` is received, treat the connection as closed and do not make further calls on it.
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`Connection`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Connection.java): holds the mutable `session` field (`SessionInfo`); `close()` calls `terminateSession(session)` and nulls the session; `checkValid()` guards every method against a closed or force-invalidated connection.
+> - `ojp-jdbc-driver` — [`MultinodeStatementService.withClusterHealth()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeStatementService.java): enriches outgoing `SessionInfo` with the current cluster health string before each RPC.
+> - `MultinodeStatementService.checkAndBindSession()`: updates the stickiness map whenever the server returns a new or changed `sessionUUID`.
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.terminateSession()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): forwards `terminateSession` to every server that received a `connect()` for this `connHash`.
+
 ---
 
 ## 6. Session Stickiness
@@ -215,6 +242,13 @@ Once a `sessionUUID` is established, **every subsequent request for that session
 A session binding is created or updated in these cases:
 - A response contains a `sessionUUID` that was not present in the request (first assignment).
 - The `targetServer` field in a response differs from the currently recorded binding (re-binding after a recovery; log a warning).
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.affinityServer(sessionKey)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): returns the bound server for a `sessionUUID`, or selects a new one via load balancing when no binding exists yet; throws `SQLException` if the bound server is unhealthy.
+> - `MultinodeConnectionManager.bindSession(sessionUUID, targetServer)`: records the `sessionUUID → host:port` mapping in `sessionToServerMap`.
+> - `MultinodeConnectionManager.getBoundTargetServer(sessionUUID)`: reads the current binding.
+> - `MultinodeConnectionManager.unbindSession(sessionUUID)`: removes the binding on session close.
+> - `ojp-jdbc-driver` — [`SessionTracker`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/SessionTracker.java): maintains per-server session counts used by the load-balancer and redistribution logic.
 
 ---
 
@@ -237,6 +271,12 @@ Server selection runs on every new connection attempt (non-XA, first `connect()`
 ### Healthy server filter
 
 Only servers whose `isHealthy() == true` are eligible for selection. If no healthy servers exist, raise a connection error.
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.selectHealthyServer()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): the entry point that dispatches to one of the two strategies based on config.
+> - `MultinodeConnectionManager.selectByLeastConnections(healthyServers)`: picks the server with the lowest active-session count; falls back to round-robin on a tie.
+> - `MultinodeConnectionManager.selectByRoundRobin(healthyServers)`: atomically increments `roundRobinCounter` and selects `servers[counter % size]`.
+> - `ojp-jdbc-driver` — [`ServerEndpoint`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/ServerEndpoint.java): holds `isHealthy`, `lastFailureTime`, host, and port state for each endpoint.
 
 ---
 
@@ -271,6 +311,13 @@ Connection-level gRPC errors indicate that the server is unreachable. The follow
 - Database errors (bad SQL, constraint violations, auth failures) — surface directly to caller.
 - Pool exhaustion — surface directly to caller.
 - Session-invalidation errors (session lost after server failure) — surface directly to caller; the caller must re-establish the session.
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`GrpcExceptionHandler.isConnectionLevelError()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/GrpcExceptionHandler.java): classifies a `StatusRuntimeException` as a connectivity failure vs. a SQL/business error.
+> - `GrpcExceptionHandler.isPoolNotFoundException()`: returns `true` for `NOT_FOUND`, triggering reconnect rather than failover.
+> - `GrpcExceptionHandler.isSessionInvalidationError()`: returns `true` when the server indicates the session is gone.
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.handleServerFailure(endpoint, exception)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): marks the server unhealthy and timestamps the failure.
+> - `MultinodeStatementService.executeOpResultWithSessionStickinessAndBinding()`: the retry loop that catches `StatusRuntimeException`, calls `isConnectionLevelError`, drives the server-selection retry cycle, and calls `handleServerFailure` on each failed attempt.
 
 ---
 
@@ -307,6 +354,12 @@ For each currently unhealthy server, check if enough time has passed since the l
 | `ojp.health.check.timeout` | 5000 ms | Maximum time for a single probe call |
 | `ojp.redistribution.enabled` | `true` | Whether to run the periodic health checker at all |
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.performHealthCheck()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): the scheduled task body; implements the two-phase check (probe healthy servers, then probe unhealthy ones) and triggers recovery.
+> - `ojp-jdbc-driver` — [`HealthCheckValidator.validateServer(endpoint)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/HealthCheckValidator.java): performs a single lightweight probe; `validateServer(endpoint, connectionDetails)` performs the full-validation probe with real credentials followed by `terminateSession`.
+> - `ojp-jdbc-driver` — [`HealthCheckConfig`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/HealthCheckConfig.java): POJO holding `healthCheckIntervalMs`, `healthCheckThresholdMs`, `healthCheckTimeoutMs`, and `redistributionEnabled`.
+> - `MultinodeConnectionManager` constructor: schedules `performHealthCheck` on a `ScheduledExecutorService` at the configured interval.
+
 ---
 
 ## 10. Connection Redistribution on Recovery
@@ -325,6 +378,12 @@ When a failed server comes back online, rebalance client-side connections so tha
    - Identify over-loaded servers (connections > ideal share).
    - Close a fraction of idle connections on over-loaded servers so they are returned to the pool, then re-opened — the client's load-balancing layer will route the re-opens to the least-loaded server (including the recovered one).
    - Honour the configurable fraction (`ojp.redistribution.idleRebalanceFraction`, default 1.0) and max-close-per-cycle limit (`ojp.redistribution.maxClosePerRecovery`, default 100).
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.reinitializePoolOnRecoveredServer(recoveredServer)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): iterates `connectionDetailsByConnHash` and calls `connect()` on the recovered server for each stored `ConnectionDetails` before marking it healthy.
+> - `ojp-jdbc-driver` — [`ConnectionRedistributor.rebalance(recoveredServers, allHealthyServers)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/ConnectionRedistributor.java): closes a fraction of idle connections on over-loaded servers for non-XA mode.
+> - `ojp-jdbc-driver` — [`XAConnectionRedistributor.rebalance(recoveredServers, allHealthyServers)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/XAConnectionRedistributor.java): equivalent redistribution for XA connections.
+> - `ojp-jdbc-driver` — [`ConnectionTracker`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/ConnectionTracker.java): maintains the per-server `Connection` list consulted by `ConnectionRedistributor`.
 
 ---
 
@@ -354,6 +413,11 @@ generate_cluster_health(endpoints):
     )
 ```
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.generateClusterHealth()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): builds the semicolon-delimited health string from `serverEndpoints`.
+> - `MultinodeConnectionManager.pushClusterHealthToAllHealthyServers()`: broadcasts an updated `ConnectionDetails` (with new `clusterHealth`) to every healthy server via `connect()`.
+> - `MultinodeStatementService.withClusterHealth(sessionInfo)`: attaches the current health string to an outgoing `SessionInfo` before each RPC.
+
 ---
 
 ## 12. Transaction Management (non-XA)
@@ -379,6 +443,13 @@ Always replace the local `SessionInfo` with the one returned by these calls.
 - Set isolation level via `callResource` with `CallType.CALL_SET`, resource name `"TransactionIsolation"`, and the integer isolation level as parameter.
 - Get isolation level via `callResource` with `CallType.CALL_GET`, resource name `"TransactionIsolation"`.
 - The isolation level must be reset to the default after each logical connection is returned to a pool (if the client integrates with a connection pool).
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`Connection.setAutoCommit(boolean)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Connection.java): calls `commitTransaction` when switching on and `startTransaction` when switching off; updates the local `session` field from each response.
+> - `Connection.commit()` / `Connection.rollback()`: delegate to `statementService.commitTransaction(session)` / `rollbackTransaction(session)` when `autoCommit == false`.
+> - `Connection.close()`: calls `terminateSession(session)` unconditionally.
+> - `Connection.setTransactionIsolation(level)` / `getTransactionIsolation()`: forwarded via `callProxy(CallType.CALL_SET/GET, "TransactionIsolation", ...)`.
+> - `ojp-jdbc-driver` — [`StatementServiceGrpcClient.startTransaction()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementServiceGrpcClient.java) / `commitTransaction()` / `rollbackTransaction()`: the single-node gRPC calls.
 
 ---
 
@@ -409,6 +480,11 @@ Call `callResource` with:
 - `resourceType = RES_SAVEPOINT`
 - `resourceUUID = <savepoint UUID>`
 - `target.callType = CALL_RELEASE`
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`Connection.setSavepoint()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Connection.java) / `setSavepoint(name)`: calls `callProxy` with `CALL_SET`, `"Savepoint"`, and the optional name; wraps the returned resource UUID in a [`Savepoint`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Savepoint.java) object.
+> - `Connection.rollback(Savepoint)`: calls `callProxy` with `CALL_ROLLBACK`, `"Savepoint"`, and the savepoint's resource UUID.
+> - `Connection.releaseSavepoint(Savepoint)`: calls `callProxy` with `CALL_RELEASE`.
 
 ---
 
@@ -452,6 +528,12 @@ On the response to `xaStart`, record the `sessionUUID → targetServer` binding 
 - `xaSetTransactionTimeout(seconds)` and `xaGetTransactionTimeout()` are straightforward pass-throughs to the server.
 - `xaIsSameRM` checks whether two `SessionInfo` objects originate from the same resource manager (same server).
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`OjpXAResource`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/xa/OjpXAResource.java): implements `XAResource`; all 10 lifecycle methods (`start`, `end`, `prepare`, `commit`, `rollback`, `recover`, `forget`, `setTransactionTimeout`, `getTransactionTimeout`, `isSameRM`); contains the `xaStart` retry loop and the `toXidProto` / `fromXidProto` conversion helpers.
+> - `ojp-jdbc-driver` — [`OjpXAConnection`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/xa/OjpXAConnection.java): creates the XA-mode `StatementService` connection (always calling the server, never cache-hit) and vends `OjpXAResource`.
+> - `ojp-jdbc-driver` — [`OjpXADataSource`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/xa/OjpXADataSource.java): entry point for XA; calls `MultinodeConnectionManager.connectXA()` to pin the session to a single server.
+> - `ojp-jdbc-driver` — [`StatementServiceGrpcClient.xaStart()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementServiceGrpcClient.java) … `xaIsSameRM()`: the 10 single-node gRPC stub wrappers.
+
 ---
 
 ## 15. Statement Execution
@@ -484,6 +566,11 @@ StatementRequest {
 - Use `executeUpdate` for INSERT / UPDATE / DELETE / DDL — returns `OpResult` with `type = INTEGER` containing affected row count.
 - Use `executeQuery` for SELECT — returns a server-streaming response. Consume the first `OpResult` to get the initial batch; call `fetchNextRows` for subsequent pages (see §18).
 - After any execution, update the local `SessionInfo` from the `OpResult.session` field.
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`Statement`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Statement.java): `executeQuery(sql)` → `statementService.executeQuery(...)`; `executeUpdate(sql)` → `statementService.executeUpdate(...)`; holds `statementUUID` (assigned lazily); `execute(sql)` handles the dual-result case.
+> - `ojp-jdbc-driver` — [`PreparedStatement`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/PreparedStatement.java): accumulates parameters in a `SortedMap<Integer, Parameter>`; `executeQuery()` and `executeUpdate()` pass the full param map to `statementService`; all 28 `setXxx(index, value)` methods map to the corresponding `ParameterType` (see §16).
+> - `ojp-jdbc-driver` — [`CallableStatement`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/CallableStatement.java): issues `callResource(CALL_PREPARE)` on construction; retrieves OUT/INOUT values via `callResource(CALL_EXECUTE)` after execution.
 
 ---
 
@@ -550,6 +637,13 @@ Example: `BigDecimal("123.45")` → `"12345 2"`.
 
 `url_value`, `rowid_value`, `uuid_value`, `biginteger_value`, `rowidlifetime_value` are all `google.protobuf.StringValue` (a wrapper message). An absent (unset) wrapper means SQL NULL. An empty string inside the wrapper is a valid non-null value.
 
+> **Reference implementation:**
+> - `ojp-grpc-commons` — [`ProtoConverter.toProto(Parameter)`](../../ojp-grpc-commons/src/main/java/org/openjproxy/grpc/ProtoConverter.java): converts a host-language `Parameter` object to `ParameterProto`; `fromProto(ParameterProto)` is the inverse.
+> - `ProtoConverter.toParameterValue(Object value)`: the central dispatcher that routes each Java type to the correct `ParameterValue` oneof field.
+> - `ProtoConverter.fromParameterValue(ParameterValue, ParameterType)`: decodes a wire value back to a Java object using both the value and the declared type as hints.
+> - `ojp-grpc-commons` — [`ProtoTypeConverters`](../../ojp-grpc-commons/src/main/java/org/openjproxy/grpc/ProtoTypeConverters.java): `uuidToProto(UUID)` / `uuidFromProto(StringValue)`, `urlToProto(URL)` / `urlFromProto(StringValue)`, `rowIdToProto(RowId)` / `rowIdBytesFromProto(StringValue)` — handles the presence-aware `StringValue` wrappers for UUID, URL, and RowId.
+> - `ojp-grpc-commons` — [`BigDecimalWire`](../../ojp-grpc-commons/src/main/java/org/openjproxy/grpc/BigDecimalWire.java): `writeBigDecimal` / `readBigDecimal` — binary wire encoding for BigDecimal (also see `documents/protocol/BIGDECIMAL_WIRE_FORMAT.md`).
+
 ---
 
 ## 17. Temporal Type Handling
@@ -602,6 +696,18 @@ On the receiving side, use `original_type` to reconstruct the correct host-langu
 
 The OJP server must always run with `user.timezone=UTC`. Client libraries should also normalise to UTC when encoding timestamps, using the `timezone` field to carry the original zone for faithful reconstruction.
 
+> **Reference implementation:**
+> - `ojp-grpc-commons` — [`TemporalConverter`](../../ojp-grpc-commons/src/main/java/org/openjproxy/grpc/TemporalConverter.java): the definitive encoding/decoding reference for all temporal types:
+>   - `toTimestampWithZone(java.sql.Timestamp, ZoneId)` / `fromTimestampWithZone(TimestampWithZone)` — `Timestamp` ↔ `TimestampWithZone`.
+>   - `calendarToTimestampWithZone(Calendar)` / `timestampWithZoneToCalendar(TimestampWithZone)` — `Calendar`.
+>   - `offsetDateTimeToTimestampWithZone` / `timestampWithZoneToOffsetDateTime` — `OffsetDateTime`.
+>   - `localDateTimeToTimestampWithZone` / `timestampWithZoneToLocalDateTime` — `LocalDateTime`.
+>   - `instantToTimestampWithZone` / `timestampWithZoneToInstant` — `Instant`.
+>   - `localDateToProtoDate(LocalDate)` / `protoDateToLocalDate(Date)` — `LocalDate` ↔ `google.type.Date`.
+>   - `localTimeToProtoTimeOfDay(LocalTime)` / `protoTimeOfDayToLocalTime(TimeOfDay)` — `LocalTime` ↔ `google.type.TimeOfDay`.
+>   - `offsetTimeToTimestampWithZone` / `timestampWithZoneToOffsetTime` — `OffsetTime`.
+>   - `fromTimestampWithZoneToObject(TimestampWithZone)`: the unified decoder that uses `TemporalType` to reconstruct the original type.
+
 ---
 
 ## 18. Result Set and Streaming
@@ -639,6 +745,12 @@ Scrollable result sets support cursor positioning through `callResource` with `R
 | `relative(rows)` | `CALL_RELATIVE` |
 | `previous()` | `CALL_PREVIOUS` |
 | `close()` | `CALL_CLOSE` |
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`ResultSet`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/ResultSet.java): `next()` drives the multi-block iteration; `setNextOpResult()` loads a new batch from the iterator; `nextWithSessionUpdate()` updates the session from each block. All `getXxx(columnIndex)` methods call `ProtoConverter.fromParameterValue()` on the column's `ParameterValue`.
+> - `ojp-jdbc-driver` — [`RemoteProxyResultSet`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/RemoteProxyResultSet.java): base class holding `resultSetUUID` and `statementService`; all scrollable-cursor operations issue `callResource(RES_RESULT_SET, CALL_FIRST/LAST/ABSOLUTE/…)`.
+> - `ojp-jdbc-driver` — [`StatementServiceGrpcClient.fetchNextRows(sessionInfo, resultSetUUID, size)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementServiceGrpcClient.java): the RPC that fetches the next page.
+> - `ojp-grpc-commons` — [`ProtoConverter.fromProto(OpQueryResultProto)`](../../ojp-grpc-commons/src/main/java/org/openjproxy/grpc/ProtoConverter.java): deserialises the initial `OpQueryResult` (labels + rows + resultSetUUID).
 
 ---
 
@@ -694,6 +806,13 @@ Receive a server-streaming response of `LobDataBlock` messages. Concatenate the 
 ### LOB and session stickiness
 
 LOB handles are server-side objects. A connection that has an open LOB must remain bound to the same server (§6). Do not reroute such connections during failover; instead surface the error to the caller.
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`LobServiceImpl`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/LobServiceImpl.java): `sendBytes(lobType, pos, inputStream)` opens the client-streaming `createLob` call, chunks the data into `LobDataBlock` messages, and returns the `LobReference`. `parseReceivedBlocks(Iterator<LobDataBlock>)` reassembles chunks from a `readLob` stream into an `InputStream`.
+> - `ojp-jdbc-driver` — [`StatementServiceGrpcClient.createLob(connection, iterator)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementServiceGrpcClient.java): the client-streaming gRPC call; uses an async stub and a `CountDownLatch` to bridge the streaming API back to a synchronous return value.
+> - `StatementServiceGrpcClient.readLob(lobReference, pos, length)`: the server-streaming gRPC call that returns an `Iterator<LobDataBlock>`.
+> - `ojp-jdbc-driver` — [`Blob`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Blob.java): `getBytes(pos, length)` and `getBinaryStream()` call `readLob`; `setBytes(pos, bytes)` calls `sendBytes`. [`Clob`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Clob.java) mirrors the same pattern for character data.
+> - `ojp-jdbc-driver` — [`BinaryStream`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/BinaryStream.java): streams binary content directly via `createLob` without materialising the full byte array.
 
 ---
 
@@ -752,6 +871,11 @@ Always update the local `SessionInfo` from `response.session`.
 
 `CALL_SET`, `CALL_GET`, `CALL_IS`, `CALL_ALL`, `CALL_NULLS`, `CALL_USES`, `CALL_SUPPORTS`, `CALL_STORES`, `CALL_NULL`, `CALL_DOES`, `CALL_DATA`, `CALL_NEXT`, `CALL_CLOSE`, `CALL_WAS`, `CALL_CLEAR`, `CALL_FIND`, `CALL_BEFORE`, `CALL_AFTER`, `CALL_FIRST`, `CALL_LAST`, `CALL_ABSOLUTE`, `CALL_RELATIVE`, `CALL_PREVIOUS`, `CALL_ROW`, `CALL_UPDATE`, `CALL_INSERT`, `CALL_DELETE`, `CALL_REFRESH`, `CALL_CANCEL`, `CALL_MOVE`, `CALL_OWN`, `CALL_OTHERS`, `CALL_UPDATES`, `CALL_DELETES`, `CALL_INSERTS`, `CALL_LOCATORS`, `CALL_AUTO`, `CALL_GENERATED`, `CALL_RELEASE`, `CALL_NATIVE`, `CALL_PREPARE`, `CALL_ROLLBACK`, `CALL_ABORT`, `CALL_EXECUTE`, `CALL_ADD`, `CALL_ENQUOTE`, `CALL_REGISTER`, `CALL_LENGTH`
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`StatementServiceGrpcClient.callResource(CallResourceRequest)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementServiceGrpcClient.java): the single-node gRPC call.
+> - `ojp-jdbc-driver` — [`DatabaseMetaData`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/DatabaseMetaData.java): every `DatabaseMetaData` method (>200 in total) is implemented by calling `callResource` with `RES_CONNECTION` and the appropriate `CallType` (e.g., `CALL_GET` for `getURL()`, `CALL_SUPPORTS` for `supportsXxx()`, `CALL_STORES` for `storesXxx()`). The private helper `newCallBuilder()` creates the skeleton `CallResourceRequest`.
+> - `ojp-jdbc-driver` — `Connection.callProxy(callType, resourceName, returnType, params)`: the private convenience wrapper used throughout `Connection` and `DatabaseMetaData` to issue `callResource` calls without building the full request proto by hand.
+
 ---
 
 ## 21. Error and Exception Mapping
@@ -784,6 +908,12 @@ Map to the host language's exception hierarchy:
 | Pool exhausted | `RESOURCE_EXHAUSTED` | Throw pool-exhaustion error; do not retry; do not mark server unhealthy |
 | Session invalidated (server failure) | Session-not-found message | Throw session-lost error; do not retry; let caller decide |
 | Session stickiness violation (server down) | Local check before RPC | Throw connection error immediately; do not reroute |
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`GrpcExceptionHandler.handle(StatusRuntimeException)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/GrpcExceptionHandler.java): extracts `SqlErrorResponse` from gRPC trailing metadata on `Status.INTERNAL` and throws the appropriate `SQLException` with SQL state and vendor code.
+> - `GrpcExceptionHandler.isPoolNotFoundException(exception)`: returns `true` for `NOT_FOUND`.
+> - `GrpcExceptionHandler.isSessionInvalidationError(exception)`: returns `true` for session-invalidation error messages.
+> - `GrpcExceptionHandler.isConnectionLevelError(exception)`: returns `true` for `UNAVAILABLE`, `DEADLINE_EXCEEDED`, and connection-related `UNKNOWN` errors.
 
 ---
 
@@ -832,6 +962,12 @@ Duration values support the following suffixes:
 - `s` — seconds (e.g. `10s`)
 - `m` — minutes (e.g. `2m`)
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`DatasourcePropertiesLoader`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/DatasourcePropertiesLoader.java): `loadOjpPropertiesForDataSource(datasourceName)` merges file properties, system properties, and environment variables with per-datasource prefix resolution. `loadOjpProperties()` loads the base `ojp.properties` file from the classpath.
+> - `ojp-jdbc-driver` — [`HealthCheckConfig`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/HealthCheckConfig.java): the strongly-typed POJO that holds all health-check and redistribution settings, populated by `MultinodeUrlParser` from the loaded `Properties`.
+> - `ojp-jdbc-driver` — [`MultinodeUrlParser.readIntProperty(props, key, default)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeUrlParser.java) / `readLongProperty(...)`: reads typed values from the merged `Properties` object.
+> - `ojp-grpc-commons` — [`GrpcClientConfig.load()`](../../ojp-grpc-commons/src/main/java/org/openjproxy/config/GrpcClientConfig.java): loads the gRPC-specific settings (max inbound message size, TLS config) from `ojp.properties`.
+
 ---
 
 ## 23. Query Result Caching
@@ -862,6 +998,9 @@ ojp.cache.queries.2.ttl=300
 ojp.cache.queries.2.invalidateOn=users
 ```
 
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`CacheConfigurationBuilder.addCachePropertiesToMap(propertiesMap, datasourceName)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/CacheConfigurationBuilder.java): reads cache rules from the loaded `Properties` and appends them to the `ConnectionDetails.properties` map that is sent to the server on `connect()`. `parseDurationToSeconds(duration)` handles the same duration format as §22.
+
 ---
 
 ## 24. Security / Transport
@@ -881,6 +1020,11 @@ When `ojp.grpc.tls.enabled = true`, create a TLS-secured channel:
 
 - Passwords must never be logged or included in exception messages.
 - Connection keys used for cache lookups (§4) may include the password as a cache key only — they must not be serialised or persisted.
+
+> **Reference implementation:**
+> - `ojp-grpc-commons` — [`GrpcChannelFactory.createChannel(host, port)`](../../ojp-grpc-commons/src/main/java/org/openjproxy/grpc/GrpcChannelFactory.java): creates a plaintext `ManagedChannel` with configurable max inbound message size; `createSecureChannel(host, port, size, tlsConfig)` builds the TLS-secured variant; `buildSslContext(tlsConfig)` sets up Netty's `SslContext` from the certificate paths.
+> - `ojp-grpc-commons` — [`GrpcClientConfig`](../../ojp-grpc-commons/src/main/java/org/openjproxy/config/GrpcClientConfig.java): loaded by `GrpcClientConfig.load()` from `ojp.properties`; exposes `getTlsConfig()` and `getMaxInboundMessageSize()`.
+> - `ojp-grpc-commons` — [`TlsConfig`](../../ojp-grpc-commons/src/main/java/org/openjproxy/config/TlsConfig.java): holds `enabled`, `certPath`, `keyPath`, `caPath`, and `clientAuth` flags.
 
 ---
 
@@ -902,6 +1046,11 @@ For Java/Spring Boot:
 - **Disable** the framework's own built-in connection pool (e.g., HikariCP in Spring Boot) when OJP is in use — double-pooling is the most common misconfiguration and causes incorrect behaviour.
 
 For other languages, document clearly in the library README that the application-side connection pool must be disabled when using OJP.
+
+> **Reference implementation:**
+> - `ojp-jdbc-driver` — [`OjpDataSource`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/OjpDataSource.java): implements `javax.sql.DataSource`; `getConnection()` / `getConnection(user, password)` delegate to `DriverManager.getConnection(url, info)` which invokes the registered `Driver`.
+> - `ojp-jdbc-driver` — [`OjpXADataSource`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/xa/OjpXADataSource.java): implements `javax.sql.XADataSource`; `getXAConnection()` creates an `OjpXAConnection` (and thus an `OjpXAResource`) for JTA integration.
+> - `spring-boot-starter-ojp` module: provides the Spring Boot auto-configuration class and the `OjpSystemPropertiesBridge` bean; sets `spring.datasource.type=OjpDataSource` and excludes `DataSourceAutoConfiguration` to prevent double-pooling.
 
 ---
 
@@ -1039,6 +1188,36 @@ Each database must have a dedicated test class gated by its own flag. The class 
 | CockroachDB | `enableCockroachDBTests` |
 
 H2 tests (in-process, no external dependency) must always be runnable in CI without any extra setup and should act as the first gate before any database-specific jobs run.
+
+> **Reference implementation — test classes by area:**
+>
+> | Test area | Java test class(es) |
+> |---|---|
+> | Basic CRUD | [`BasicCrudIntegrationTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/BasicCrudIntegrationTest.java) |
+> | Multiple data types | `H2MultipleTypesIntegrationTest`, `PostgresMultipleTypesIntegrationTest`, `MySQLMultipleTypesIntegrationTest`, `OracleMultipleTypesIntegrationTest`, `SQLServerMultipleTypesIntegrationTest`, `Db2MultipleTypesIntegrationTest`, `CockroachDBMultipleTypesIntegrationTest`, `MariaDBMultipleTypesIntegrationTest` |
+> | Statement variants | `H2StatementExtensiveTests`, `H2PreparedStatementExtensiveTests` (and per-DB equivalents) |
+> | ResultSet navigation / metadata | `H2ResultSetTest` (and per-DB), `H2ResultSetMetaDataExtensiveTests`, `H2ReadMultipleBlocksOfDataIntegrationTest` |
+> | DatabaseMetaData | `H2DatabaseMetaDataExtensiveTests`, `H2ConnectionExtensiveTests` (and per-DB) |
+> | Transactions | `H2ConnectionExtensiveTests`, [`TransactionIsolationResetTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/TransactionIsolationResetTest.java) |
+> | Savepoints | `H2SavepointTests` (and per-DB `*SavepointTests`) |
+> | XA transactions | [`PostgresXAIntegrationTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/PostgresXAIntegrationTest.java), `MySQLXAIntegrationTest`, `MariaDBXAIntegrationTest`, `OracleXAIntegrationTest`, `SqlServerXAIntegrationTest`, `Db2XAIntegrationTest`, [`XASessionInvalidationTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/XASessionInvalidationTest.java) |
+> | LOBs | [`BlobIntegrationTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/BlobIntegrationTest.java), [`BinaryStreamIntegrationTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/BinaryStreamIntegrationTest.java), [`HydratedLobValidationTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/HydratedLobValidationTest.java) (and per-DB `*Blob*` / `*BinaryStream*`) |
+> | Session affinity | [`H2SessionAffinityIntegrationTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/H2SessionAffinityIntegrationTest.java) (and per-DB `*SessionAffinity*`) |
+> | Multi-block result sets | `H2ReadMultipleBlocksOfDataIntegrationTest` (and per-DB) |
+> | Multinode load balancing | [`LoadAwareServerSelectionTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/LoadAwareServerSelectionTest.java), [`MultinodeIntegrationTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeIntegrationTest.java) |
+> | Multinode failover | [`MultinodeFailoverTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeFailoverTest.java), [`MultinodeConnectionManagerErrorHandlingTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeConnectionManagerErrorHandlingTest.java) |
+> | Multinode recovery / redistribution | [`MultinodeRecoveryTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeRecoveryTest.java) |
+> | XA multinode | [`MultinodeXAIntegrationTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeXAIntegrationTest.java) |
+> | connHash caching | [`ConnectRpcSkipOptimisationTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/ConnectRpcSkipOptimisationTest.java), [`UnifiedConnectionModeTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/UnifiedConnectionModeTest.java) |
+> | Session stickiness error path | [`MultinodeTargetServerBindingTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeTargetServerBindingTest.java), `MultinodeStatementServiceTest` |
+> | Cluster health propagation | [`MultinodeConnectionManagerClusterHealthTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeConnectionManagerClusterHealthTest.java) |
+> | Concurrency / pool exhaustion | [`ConcurrencyTimeoutTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/ConcurrencyTimeoutTest.java) |
+> | Multi-datasource | [`MultiDataSourceIntegrationTest`](../../ojp-jdbc-driver/src/test/java/openjproxy/jdbc/MultiDataSourceIntegrationTest.java), [`MultiDataSourceConfigurationTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/jdbc/MultiDataSourceConfigurationTest.java) |
+> | Configuration loading | [`DatasourcePropertiesLoaderSystemPropertyTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/jdbc/DatasourcePropertiesLoaderSystemPropertyTest.java), [`DatasourcePropertiesLoaderEnvironmentTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/jdbc/DatasourcePropertiesLoaderEnvironmentTest.java) |
+> | URL parsing | [`MultinodeUrlParserTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeUrlParserTest.java), [`UrlParserTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/jdbc/UrlParserTest.java), [`DriverMultinodeUrlTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/jdbc/DriverMultinodeUrlTest.java) |
+> | DataSource API | [`OjpDataSourceTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/jdbc/OjpDataSourceTest.java), [`OjpXADataSourceTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/jdbc/xa/OjpXADataSourceTest.java) |
+> | Health check config | [`HealthCheckConfigTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/HealthCheckConfigTest.java), [`MultinodeRetryConfigTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/MultinodeRetryConfigTest.java) |
+> | Session tracker unit | [`SessionTrackerTest`](../../ojp-jdbc-driver/src/test/java/org/openjproxy/grpc/client/SessionTrackerTest.java) |
 
 ---
 
