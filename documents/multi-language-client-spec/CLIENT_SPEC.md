@@ -292,15 +292,20 @@ Connection-level gRPC errors indicate that the server is unreachable. The follow
 | `DEADLINE_EXCEEDED` | Yes |
 | `UNKNOWN` (with "connection" in message) | Yes |
 | `INTERNAL` with SQL metadata trailers | **No** — this is a database-level error |
+| `INTERNAL` without SQL metadata trailers | Yes — treated as a transport-level failure |
 | `NOT_FOUND` | **No** — triggers reconnect (see §4), not failover |
 | `RESOURCE_EXHAUSTED` (pool exhaustion) | **No** — surface to caller |
+| `CANCELLED` | **No** — this is a client-initiated cancellation signal; must never mark a server unhealthy |
 | Any `SQLException` from server | **No** |
 
 ### Failover procedure
 
 1. When a connectivity error is detected on a server:
-   a. Mark the server unhealthy (`isHealthy = false`), recording the failure timestamp.
-   b. Log the failure.
+   a. Capture whether the server was previously healthy (`wasHealthy`).
+   b. Mark the server unhealthy (`isHealthy = false`), recording the failure timestamp.
+   c. Log the failure.
+   d. If this is a genuine healthy → unhealthy transition (`wasHealthy == true`), submit `pushClusterHealthToAllHealthyServers()` asynchronously to the background scheduler so surviving servers resize their pools immediately. The push is submitted (not called inline) to avoid blocking the query thread.
+   e. Shut down the gRPC channel for the failed server gracefully (allow in-flight calls to drain, then discard).
 2. Select the next healthy server (using the configured strategy, excluding the failed server and any already attempted in this retry cycle).
 3. Retry the operation on the new server.
 4. If all servers have been attempted and all failed, raise a connection error to the caller.
@@ -313,10 +318,10 @@ Connection-level gRPC errors indicate that the server is unreachable. The follow
 - Session-invalidation errors (session lost after server failure) — surface directly to caller; the caller must re-establish the session.
 
 > **Reference implementation:**
-> - `ojp-jdbc-driver` — [`GrpcExceptionHandler.isConnectionLevelError()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/GrpcExceptionHandler.java): classifies a `StatusRuntimeException` as a connectivity failure vs. a SQL/business error.
+> - `ojp-jdbc-driver` — [`GrpcExceptionHandler.isConnectionLevelError()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/GrpcExceptionHandler.java): classifies a `StatusRuntimeException` as a connectivity failure vs. a SQL/business error. `CANCELLED` is explicitly **excluded** (it is a client-side signal, not a server failure).
 > - `GrpcExceptionHandler.isPoolNotFoundException()`: returns `true` for `NOT_FOUND`, triggering reconnect rather than failover.
 > - `GrpcExceptionHandler.isSessionInvalidationError()`: returns `true` when the server indicates the session is gone.
-> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.handleServerFailure(endpoint, exception)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): marks the server unhealthy and timestamps the failure.
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.handleServerFailure(endpoint, exception)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): marks the server unhealthy, timestamps the failure, shuts down the gRPC channel gracefully, and — only on a genuine healthy→unhealthy transition (`wasHealthy == true`) — submits `pushClusterHealthToAllHealthyServers()` to the background `healthCheckScheduler` so the cluster health push does not block the query thread.
 > - `MultinodeStatementService.executeOpResultWithSessionStickinessAndBinding()`: the retry loop that catches `StatusRuntimeException`, calls `isConnectionLevelError`, drives the server-selection retry cycle, and calls `handleServerFailure` on each failed attempt.
 
 ---
@@ -333,10 +338,10 @@ Run a periodic background task that checks server health. The task must:
 ### Two-phase check
 
 **Phase 1 — probe healthy servers (detect newly failed servers)**  
-For each currently healthy server, send a `connect()` with empty credentials. If the call throws any exception, mark the server unhealthy and call the server-failure handler (see §11).
+Run when there are active XA sessions (`sessionToServerMap` is non-empty) **or** cached non-XA connection details (`connectionDetailsByConnHash` is non-empty). This dual guard ensures both XA and non-XA workloads trigger early failure detection. The guard prevents spurious "no healthy servers" errors before any connection has been established. For each currently healthy server that passes the guard, send a probe call. If the call fails, mark the server unhealthy and call the server-failure handler (see §8 and §11).
 
 **Phase 2 — probe unhealthy servers (detect recovery)**  
-For each currently unhealthy server, check if enough time has passed since the last failure (property `ojp.health.check.threshold`, default 5 000 ms). If so, probe the server. If the probe succeeds, mark it healthy and trigger recovery procedures (see §10).
+For each currently unhealthy server, check if enough time has passed since the last failure (property `ojp.health.check.threshold`, default 5 000 ms). If so, probe the server. If the probe succeeds, run recovery (see §10).
 
 ### Health probe modes
 
@@ -355,7 +360,7 @@ For each currently unhealthy server, check if enough time has passed since the l
 | `ojp.redistribution.enabled` | `true` | Whether to run the periodic health checker at all |
 
 > **Reference implementation:**
-> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.performHealthCheck()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): the scheduled task body; implements the two-phase check (probe healthy servers, then probe unhealthy ones) and triggers recovery.
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.performHealthCheck()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): the scheduled task body; implements the two-phase check. Phase 1 fires when `!sessionToServerMap.isEmpty() || !connectionDetailsByConnHash.isEmpty()` (XA sessions OR non-XA cached connections). Phase 1 failure calls `pushClusterHealthToAllHealthyServers()` inline on the health-check thread. Phase 2 calls `reinitializePoolOnRecoveredServer()` before `markHealthy()`, then pushes cluster health.
 > - `ojp-jdbc-driver` — [`HealthCheckValidator.validateServer(endpoint)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/HealthCheckValidator.java): performs a single lightweight probe; `validateServer(endpoint, connectionDetails)` performs the full-validation probe with real credentials followed by `terminateSession`.
 > - `ojp-jdbc-driver` — [`HealthCheckConfig`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/HealthCheckConfig.java): POJO holding `healthCheckIntervalMs`, `healthCheckThresholdMs`, `healthCheckTimeoutMs`, and `redistributionEnabled`.
 > - `MultinodeConnectionManager` constructor: schedules `performHealthCheck` on a `ScheduledExecutorService` at the configured interval.
@@ -370,8 +375,8 @@ When a failed server comes back online, rebalance client-side connections so tha
 
 ### Procedure on recovery
 
-1. Before marking the server healthy, **proactively re-initialise pools** on the recovered server. For every cached `connHash`/`ConnectionDetails` pair, call `connect()` on the recovered server so it creates the HikariCP pool immediately. This avoids `NOT_FOUND` errors on the first SQL call routed there.
-2. Mark the server healthy.
+1. **Reinitialize pools on the recovered server first** (before marking healthy). Check whether any non-XA connections have been cached (`connectionDetailsByConnHash` is non-empty). If so, for every cached `connHash`/`ConnectionDetails` pair, call `connect()` on the recovered server so it creates the HikariCP pool immediately. This closes the NOT_FOUND window that would otherwise exist between marking the server healthy and the first SQL call reaching it. Only after all pools are pre-created, proceed to step 2.
+2. Mark the server healthy (`endpoint.markHealthy()`).
 3. Push the updated cluster health string to all healthy servers (see §11) so they can resize their pools.
 4. If redistribution is enabled (`ojp.redistribution.enabled = true`), begin rebalancing:
    - Determine the ideal share: `totalConnections / numberOfHealthyServers`.
@@ -380,7 +385,7 @@ When a failed server comes back online, rebalance client-side connections so tha
    - Honour the configurable fraction (`ojp.redistribution.idleRebalanceFraction`, default 1.0) and max-close-per-cycle limit (`ojp.redistribution.maxClosePerRecovery`, default 100).
 
 > **Reference implementation:**
-> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.reinitializePoolOnRecoveredServer(recoveredServer)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): iterates `connectionDetailsByConnHash` and calls `connect()` on the recovered server for each stored `ConnectionDetails` before marking it healthy.
+> - `ojp-jdbc-driver` — [`MultinodeConnectionManager.reinitializePoolOnRecoveredServer(recoveredServer)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): runs only when `!connectionDetailsByConnHash.isEmpty()`; iterates the map and calls `connect()` on the recovered server for each stored `ConnectionDetails`; always called **before** `endpoint.markHealthy()` to eliminate the NOT_FOUND window.
 > - `ojp-jdbc-driver` — [`ConnectionRedistributor.rebalance(recoveredServers, allHealthyServers)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/ConnectionRedistributor.java): closes a fraction of idle connections on over-loaded servers for non-XA mode.
 > - `ojp-jdbc-driver` — [`XAConnectionRedistributor.rebalance(recoveredServers, allHealthyServers)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/XAConnectionRedistributor.java): equivalent redistribution for XA connections.
 > - `ojp-jdbc-driver` — [`ConnectionTracker`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/ConnectionTracker.java): maintains the per-server `Connection` list consulted by `ConnectionRedistributor`.
@@ -401,7 +406,13 @@ Each semicolon-separated segment is `host:port(STATUS)` where status is `UP` or 
 
 - **Build** the cluster health string from local server endpoint health state before every `connect()` call and before every operation that carries a `SessionInfo` (by populating `SessionInfo.clusterHealth`).
 - **Consume** the cluster health string returned in `SessionInfo.clusterHealth` on every response. Update local endpoint health states accordingly: mark endpoints `DOWN` as unhealthy and endpoints `UP` as healthy (if they were previously failed).
-- **Push** the updated cluster health to all currently healthy servers after a server health state change (failure or recovery). This is done by calling `connect()` on each healthy server with a `ConnectionDetails` that contains the new `clusterHealth`. The server uses this to resize its pool immediately.
+- **Proactively push** the updated cluster health to all currently healthy servers whenever the topology changes (a server fails or recovers). This push happens via two independent triggers — both are necessary:
+
+  **Trigger 1 — health-check thread**: When `performHealthCheck()` detects a newly failed server or a recovered server, it calls `pushClusterHealthToAllHealthyServers()` inline on the health-check thread. This covers the case when no SQL traffic is active at the moment of the topology change.
+
+  **Trigger 2 — query thread**: When a SQL query thread detects server failure via `handleServerFailure()`, it submits `pushClusterHealthToAllHealthyServers()` to the background scheduler. This covers the race where the query thread marks the server unhealthy before the health checker runs (the health checker's Phase 1 loop would then skip the already-unhealthy server and never push). The push is submitted asynchronously to avoid blocking the query thread.
+
+  The push is done by calling `connect()` on each healthy server with a `ConnectionDetails` whose `clusterHealth` field contains the new topology string. The server uses this to resize its pool immediately, regardless of whether any SQL is in flight.
 
 ### Generation
 
@@ -415,8 +426,10 @@ generate_cluster_health(endpoints):
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`MultinodeConnectionManager.generateClusterHealth()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): builds the semicolon-delimited health string from `serverEndpoints`.
-> - `MultinodeConnectionManager.pushClusterHealthToAllHealthyServers()`: broadcasts an updated `ConnectionDetails` (with new `clusterHealth`) to every healthy server via `connect()`.
-> - `MultinodeStatementService.withClusterHealth(sessionInfo)`: attaches the current health string to an outgoing `SessionInfo` before each RPC.
+> - `MultinodeConnectionManager.pushClusterHealthToAllHealthyServers()`: calls `connect()` on every healthy server with the new cluster health embedded in `ConnectionDetails`; only runs when `!connectionDetailsByConnHash.isEmpty()` (no-op until the first real connection is established).
+> - `MultinodeConnectionManager.handleServerFailure()` (Trigger 2): submits `pushClusterHealthToAllHealthyServers()` to `healthCheckScheduler` on a genuine healthy→unhealthy transition so query threads are never blocked by the push.
+> - `MultinodeConnectionManager.performHealthCheck()` (Trigger 1): calls `pushClusterHealthToAllHealthyServers()` directly (inline on health-check thread) after marking a server DOWN or after a recovered server is marked healthy.
+> - `MultinodeStatementService.withClusterHealth(sessionInfo)`: attaches the current health string to an outgoing `SessionInfo` before each RPC (reactive secondary path).
 
 ---
 
@@ -905,9 +918,12 @@ Map to the host language's exception hierarchy:
 | Pool not found (server restarted) | `NOT_FOUND` | Invalidate connHash cache; reconnect; retry once (§4) |
 | Server unreachable | `UNAVAILABLE` | Failover to next server (§8) |
 | Request timeout | `DEADLINE_EXCEEDED` | Failover to next server (§8) |
+| Client-side cancellation | `CANCELLED` | Do **not** failover; do **not** mark server unhealthy; surface to caller |
 | Pool exhausted | `RESOURCE_EXHAUSTED` | Throw pool-exhaustion error; do not retry; do not mark server unhealthy |
 | Session invalidated (server failure) | Session-not-found message | Throw session-lost error; do not retry; let caller decide |
 | Session stickiness violation (server down) | Local check before RPC | Throw connection error immediately; do not reroute |
+
+> **Note:** Before this classification was established (prior to April 2026) the server incorrectly used `Status.CANCELLED` for SQL errors. The correct status is `Status.INTERNAL` with a `SqlErrorResponse` trailer. Any implementation must use `INTERNAL` for SQL errors and must not treat `CANCELLED` as a server failure.
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`GrpcExceptionHandler.handle(StatusRuntimeException)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/GrpcExceptionHandler.java): extracts `SqlErrorResponse` from gRPC trailing metadata on `Status.INTERNAL` and throws the appropriate `SQLException` with SQL state and vendor code.
