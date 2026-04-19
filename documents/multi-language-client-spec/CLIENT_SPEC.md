@@ -10,7 +10,7 @@
 ## Table of Contents
 
 1. [gRPC Interface Implementation](#1-grpc-interface-implementation)
-2. [URL Parsing](#2-url-parsing)
+2. [Connection Configuration and Building ConnectionDetails](#2-connection-configuration-and-building-connectiondetails)
 3. [Client Identity](#3-client-identity)
 4. [Connection Establishment and connHash Caching](#4-connection-establishment-and-connhash-caching)
 5. [Session Management](#5-session-management)
@@ -83,6 +83,18 @@ The client must implement stubs for every RPC in `StatementService` and `EchoSer
 - Use DNS-prefixed targets (`dns:///host:port`) where the gRPC runtime supports it, to allow future SRV-based discovery.
 - Blocking stubs are used for synchronous operations; async stubs are required for client-streaming (`createLob`) and server-streaming (`executeQuery`, `readLob`) RPCs.
 - Channel shutdown must be graceful (allow in-flight calls to complete) and must be triggered on client shutdown.
+
+### Pseudo-code
+
+```python
+# Create one long-lived channel per OJP server endpoint
+channel = grpc.create_channel("localhost:10591", credentials=grpc.local_channel_credentials())
+stub    = StatementServiceStub(channel)   # used for all SQL operations
+echo    = EchoServiceStub(channel)         # used for health heartbeats
+
+# On process shutdown — drain in-flight calls before closing
+channel.shutdown(grace_period_seconds=5)
+```
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`StatementService`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementService.java): the unified interface declaring all RPC methods (`connect`, `executeUpdate`, `executeQuery`, `fetchNextRows`, `createLob`, `readLob`, `terminateSession`, `startTransaction`, `commitTransaction`, `rollbackTransaction`, `callResource`, all XA operations).
@@ -172,6 +184,47 @@ Use the same `url` string that was placed in `ConnectionDetails.url` so the cach
 3. Cache the returned `connHash`, keyed on `url + "|" + user + "|" + password + "|" + datasourceName`. Also store the full `ConnectionDetails` so it can be replayed if the server restarts.
 4. Return the received `SessionInfo` to the caller.
 
+### Pseudo-code
+
+```python
+# --- First connection (cache miss) ---
+req = ConnectionDetails(
+    url             = "jdbc:postgresql://db:5432/mydb",  # actual DB URL
+    user            = "alice",
+    password        = "secret",
+    clientUUID      = CLIENT_UUID,                       # stable process UUID (§3)
+    serverEndpoints = ["host1:10591", "host2:10591"],    # full cluster list
+    clusterHealth   = build_cluster_health(endpoints),   # §11; "" on very first call
+    isXA            = False,
+    properties      = [PropertyEntry(key="ojp.datasource.name", string_value="default")]
+)
+
+session = stub.connect(req)
+# session.connHash   = "abc123..."  — server-computed pool key
+# session.clientUUID = CLIENT_UUID
+
+# Cache connHash for subsequent connections
+cache_key = f"{req.url}|{req.user}|{req.password}|default"
+connhash_cache[cache_key] = session.connHash
+stored_details[session.connHash] = req   # kept for NOT_FOUND recovery (see below)
+
+# --- Subsequent connection (cache hit, non-XA) ---
+# No RPC call needed — build SessionInfo locally from the cached connHash
+session = SessionInfo(
+    connHash   = connhash_cache[cache_key],
+    clientUUID = CLIENT_UUID,
+    isXA       = False
+    # sessionUUID is absent; the server assigns it lazily on startTransaction
+)
+
+# --- NOT_FOUND recovery ---
+# If any RPC returns Status.NOT_FOUND (server restarted, pool lost):
+del connhash_cache[cache_key]
+session = stub.connect(stored_details[old_conn_hash])  # re-issue real connect()
+connhash_cache[cache_key] = session.connHash           # update cache
+# then retry the original failed RPC once
+```
+
 ### Subsequent connections (cache hit, non-XA only)
 
 When a subsequent connection uses the same credentials:
@@ -227,6 +280,22 @@ When any gRPC call returns `Status.NOT_FOUND`, the server has lost its in-memory
 - When the response contains a `sessionUUID` that was absent in the request, register it immediately with the session-stickiness layer (see §6).
 - On connection close: call `terminateSession(SessionInfo)`. This is mandatory for releasing server-side resources, especially in multinode deployments where multiple servers may hold pools.
 - If `sessionStatus == SESSION_TERMINATED` is received, treat the connection as closed and do not make further calls on it.
+
+### Pseudo-code
+
+```python
+# Every gRPC call returns an updated SessionInfo — always replace the local copy
+resp    = stub.executeUpdate(StatementRequest(session=current_session, sql="..."))
+current_session = resp.session   # ← update after every call
+
+# When a new sessionUUID appears in the response, record the server binding (§6)
+if resp.session.sessionUUID and resp.session.sessionUUID != current_session.sessionUUID:
+    bind_session(resp.session.sessionUUID, resp.session.targetServer)
+
+# Close a connection — release server-side state
+stub.terminateSession(current_session)
+# After this call, discard current_session and do not make further calls on it
+```
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`Connection`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Connection.java): holds the mutable `session` field (`SessionInfo`); `close()` calls `terminateSession(session)` and nulls the session; `checkValid()` guards every method against a closed or force-invalidated connection.
@@ -371,6 +440,44 @@ For each currently unhealthy server, check if enough time has passed since the l
 | `ojp.health.check.timeout` | 5000 ms | Maximum time for a single probe call |
 | `ojp.redistribution.enabled` | `true` | Whether to run the periodic health checker at all |
 
+### Pseudo-code
+
+```python
+# Lightweight heartbeat: send empty credentials — any response means transport is up
+def heartbeat_probe(stub):
+    try:
+        stub.connect(ConnectionDetails(url="", user="", password=""))
+        return True   # server is reachable
+    except grpc.RpcError:
+        return False  # mark server unhealthy (§8)
+
+# Full validation: connect with real credentials, then immediately terminate
+def full_validation_probe(stub, stored_details):
+    try:
+        session = stub.connect(stored_details)
+        stub.terminateSession(session)
+        return True
+    except grpc.RpcError:
+        return False
+
+# Periodic background task
+def run_health_check(endpoints, stubs, stored_details):
+    for ep in endpoints:
+        if ep.is_healthy:
+            # Phase 1 — probe healthy server; detect new failures
+            if stored_details or xa_sessions:   # guard: skip if no connections yet
+                if not heartbeat_probe(stubs[ep]):
+                    handle_server_failure(ep)
+                    push_cluster_health_async(endpoints, stored_details)
+        else:
+            # Phase 2 — probe unhealthy server; detect recovery
+            if time_since(ep.last_failure) >= HEALTH_CHECK_THRESHOLD:
+                if heartbeat_probe(stubs[ep]):
+                    reinitialize_pool_on_recovered_server(ep, stored_details)  # §10
+                    ep.mark_healthy()
+                    push_cluster_health_inline(endpoints, stored_details)      # §11
+```
+
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`MultinodeConnectionManager.performHealthCheck()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): the scheduled task body; implements the two-phase check. Phase 1 fires when `!sessionToServerMap.isEmpty() || !connectionDetailsByConnHash.isEmpty()` (XA sessions OR non-XA cached connections). Phase 1 failure calls `pushClusterHealthToAllHealthyServers()` inline on the health-check thread. Phase 2 calls `reinitializePoolOnRecoveredServer()` before `markHealthy()`, then pushes cluster health.
 > - `ojp-jdbc-driver` — [`HealthCheckValidator.validateServer(endpoint)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/HealthCheckValidator.java): performs a single lightweight probe; `validateServer(endpoint, connectionDetails)` performs the full-validation probe with real credentials followed by `terminateSession`.
@@ -436,6 +543,41 @@ generate_cluster_health(endpoints):
     )
 ```
 
+### Pseudo-code
+
+```python
+# Build the health string from local endpoint state
+def build_cluster_health(endpoints):
+    return ";".join(
+        f"{ep.host}:{ep.port}({'UP' if ep.is_healthy else 'DOWN'})"
+        for ep in endpoints
+    )
+
+# Push updated cluster health to all healthy servers via a connect() call.
+# The server uses the clusterHealth field to resize its pool immediately.
+def push_cluster_health(endpoints, stored_details):
+    if not stored_details:
+        return   # no connections yet — nothing to push
+    health_str = build_cluster_health(endpoints)
+    for conn_hash, details in stored_details.items():
+        push_req = ConnectionDetails(**details, clusterHealth=health_str)
+        for ep in endpoints:
+            if ep.is_healthy:
+                stubs[ep].connect(push_req)   # no-op for pool creation; resizes pool
+
+# Consume the cluster health returned in every gRPC response
+def consume_cluster_health(session_info):
+    for segment in session_info.clusterHealth.split(";"):
+        host_port, status = segment.rsplit("(", 1)
+        status = status.rstrip(")")
+        endpoint = find_endpoint(host_port)
+        if status == "DOWN" and endpoint.is_healthy:
+            handle_server_failure(endpoint)
+        elif status == "UP" and not endpoint.is_healthy:
+            # do not mark healthy here — let the health-check thread confirm (§9)
+            pass
+```
+
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`MultinodeConnectionManager.generateClusterHealth()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/MultinodeConnectionManager.java): builds the semicolon-delimited health string from `serverEndpoints`.
 > - `MultinodeConnectionManager.pushClusterHealthToAllHealthyServers()`: calls `connect()` on every healthy server with the new cluster health embedded in `ConnectionDetails`; only runs when `!connectionDetailsByConnHash.isEmpty()` (no-op until the first real connection is established).
@@ -447,27 +589,62 @@ generate_cluster_health(endpoints):
 
 ## 12. Transaction Management (non-XA)
 
-### autoCommit semantics
+### Transaction lifecycle
 
-- Default state is `autoCommit = true`.
-- When `autoCommit` is switched **off** (`false`), immediately call `startTransaction(SessionInfo)`. Store the returned `SessionInfo` (which now contains a `transactionUUID` and `TRX_ACTIVE` status).
-- When `autoCommit` is switched **on** (`true`) while a transaction is active (`TRX_ACTIVE`), immediately call `commitTransaction(SessionInfo)` to commit the pending work.
-- In `autoCommit = false` mode, no `startTransaction` call is needed before each SQL statement — the server tracks the open transaction via `sessionUUID`.
+The server tracks open transactions per session. The client controls when transactions begin and end by calling explicit RPCs.
 
-### Commit and rollback
-
-| Client call | gRPC call | Condition |
-|---|---|---|
-| `commit()` | `commitTransaction(SessionInfo)` | Only when `autoCommit == false` |
-| `rollback()` | `rollbackTransaction(SessionInfo)` | Only when `autoCommit == false` |
+- **Start a transaction**: call `startTransaction(SessionInfo)`. The returned `SessionInfo` contains a `transactionUUID` and `transactionStatus = TRX_ACTIVE`. All subsequent SQL calls on this session run inside the transaction until it is committed or rolled back.
+- **Commit**: call `commitTransaction(SessionInfo)`. Returns updated `SessionInfo` with `transactionStatus = TRX_COMMITED`.
+- **Rollback**: call `rollbackTransaction(SessionInfo)`. Returns updated `SessionInfo` with `transactionStatus = TRX_ROLLBACK`.
+- **Auto-commit mode** (optional, for JDBC compatibility): if your client API exposes an auto-commit flag, implement it by calling `startTransaction` when the flag is switched off, and `commitTransaction` when it is switched back on while a transaction is active. In auto-commit mode, each SQL statement runs without an explicit transaction; the server commits each statement individually.
 
 Always replace the local `SessionInfo` with the one returned by these calls.
 
 ### Transaction isolation
 
-- Set isolation level via `callResource` with `CallType.CALL_SET`, resource name `"TransactionIsolation"`, and the integer isolation level as parameter.
-- Get isolation level via `callResource` with `CallType.CALL_GET`, resource name `"TransactionIsolation"`.
-- The isolation level must be reset to the default after each logical connection is returned to a pool (if the client integrates with a connection pool).
+Set or get the isolation level by calling `callResource` with `RES_CONNECTION` and `CallType.CALL_SET` / `CALL_GET` and resource name `"TransactionIsolation"`. The isolation level should be reset to the default after each logical connection is reused.
+
+### Pseudo-code
+
+```python
+# Begin an explicit transaction
+session = stub.startTransaction(session)
+# session.transactionInfo.transactionUUID   = "txn-uuid"
+# session.transactionInfo.transactionStatus = TRX_ACTIVE
+
+# Execute SQL within the open transaction
+resp    = stub.executeUpdate(StatementRequest(session=session, sql="INSERT INTO orders ..."))
+session = resp.session   # always update local session
+
+# Commit
+session = stub.commitTransaction(session)
+# session.transactionInfo.transactionStatus = TRX_COMMITED
+
+# — OR — Rollback
+session = stub.rollbackTransaction(session)
+# session.transactionInfo.transactionStatus = TRX_ROLLBACK
+
+# Set transaction isolation (READ_COMMITTED = 2)
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_CONNECTION,
+    target       = TargetCall(
+        callType     = CALL_SET,
+        resourceName = "TransactionIsolation",
+        params       = [ParameterValue(int_value=2)]
+    )
+))
+session = resp.session
+
+# Get current isolation level
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_CONNECTION,
+    target       = TargetCall(callType=CALL_GET, resourceName="TransactionIsolation")
+))
+isolation_level = resp.values[0].int_value
+session         = resp.session
+```
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`Connection.setAutoCommit(boolean)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Connection.java): calls `commitTransaction` when switching on and `startTransaction` when switching off; updates the local `session` field from each response.
@@ -505,6 +682,41 @@ Call `callResource` with:
 - `resourceType = RES_SAVEPOINT`
 - `resourceUUID = <savepoint UUID>`
 - `target.callType = CALL_RELEASE`
+
+### Pseudo-code
+
+```python
+# Create a named savepoint
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_SAVEPOINT,
+    target       = TargetCall(
+        callType     = CALL_SET,
+        resourceName = "Savepoint",
+        params       = [ParameterValue(string_value="my_savepoint")]  # omit for anonymous
+    )
+))
+savepoint_uuid = resp.resourceUUID   # keep this to roll back or release later
+session        = resp.session
+
+# Roll back to the savepoint (partial undo)
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_SAVEPOINT,
+    resourceUUID = savepoint_uuid,
+    target       = TargetCall(callType=CALL_ROLLBACK, resourceName="Savepoint")
+))
+session = resp.session
+
+# Release the savepoint (no longer needed)
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_SAVEPOINT,
+    resourceUUID = savepoint_uuid,
+    target       = TargetCall(callType=CALL_RELEASE, resourceName="Savepoint")
+))
+session = resp.session
+```
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`Connection.setSavepoint()`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Connection.java) / `setSavepoint(name)`: calls `callProxy` with `CALL_SET`, `"Savepoint"`, and the optional name; wraps the returned resource UUID in a [`Savepoint`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Savepoint.java) object.
@@ -553,6 +765,49 @@ On the response to `xaStart`, record the `sessionUUID → targetServer` binding 
 - `xaSetTransactionTimeout(seconds)` and `xaGetTransactionTimeout()` are straightforward pass-throughs to the server.
 - `xaIsSameRM` checks whether two `SessionInfo` objects originate from the same resource manager (same server).
 
+### Pseudo-code
+
+```python
+xid = XidProto(
+    formatId            = 1,
+    globalTransactionId = b"global-tx-001",
+    branchQualifier     = b"branch-1"
+)
+
+# 1. Start the XA branch (safe to retry on connection error)
+resp    = stub.xaStart(XaStartRequest(session=session, xid=xid, flags=0))
+session = resp.session   # bind session.targetServer → this server for all remaining calls
+
+# 2. Execute SQL within the branch (normal executeUpdate/executeQuery calls)
+resp    = stub.executeUpdate(StatementRequest(session=session, sql="UPDATE accounts ..."))
+session = resp.session
+
+# 3. End the branch — do NOT retry past this point
+resp    = stub.xaEnd(XaEndRequest(session=session, xid=xid, flags=0))
+session = resp.session
+
+# 4. Prepare (two-phase commit, phase 1)
+prep = stub.xaPrepare(XaPrepareRequest(session=session, xid=xid))
+# prep.result = XA_OK (proceed to commit) or XA_RDONLY (read-only; no commit needed)
+
+# 5a. Commit (two-phase)
+stub.xaCommit(XaCommitRequest(session=session, xid=xid, onePhase=False))
+
+# 5b. — OR — One-phase optimisation (skip xaPrepare)
+stub.xaCommit(XaCommitRequest(session=session, xid=xid, onePhase=True))
+
+# 5c. — OR — Rollback
+stub.xaRollback(XaRollbackRequest(session=session, xid=xid))
+
+# Recovery: list in-doubt XIDs after a crash
+resp = stub.xaRecover(XaRecoverRequest(session=session, flag=TMSTARTRSCAN))
+for recovered_xid in resp.xids:
+    stub.xaCommit(...)   # or xaRollback — decision belongs to the transaction manager
+
+# Forget a heuristically completed branch
+stub.xaForget(XaForgetRequest(session=session, xid=xid))
+```
+
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`OjpXAResource`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/xa/OjpXAResource.java): implements `XAResource`; all 10 lifecycle methods (`start`, `end`, `prepare`, `commit`, `rollback`, `recover`, `forget`, `setTransactionTimeout`, `getTransactionTimeout`, `isSameRM`); contains the `xaStart` retry loop and the `toXidProto` / `fromXidProto` conversion helpers.
 > - `ojp-jdbc-driver` — [`OjpXAConnection`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/xa/OjpXAConnection.java): creates the XA-mode `StatementService` connection (always calling the server, never cache-hit) and vends `OjpXAResource`.
@@ -563,25 +818,27 @@ On the response to `xaStart`, record the `sessionUUID → targetServer` binding 
 
 ## 15. Statement Execution
 
-### Three statement types
+### Sending SQL to the server
 
-**Plain Statement**  
-Execute arbitrary SQL strings without parameters. Maps to `executeUpdate` or `executeQuery` with an empty `parameters` list.
+All SQL is executed by populating a `StatementRequest` and calling either `executeUpdate` or `executeQuery` on the stub.
 
-**Prepared Statement**  
-Pre-compiled SQL with positional parameters (`?` placeholders). Parameters are accumulated locally and sent with the SQL in a single `StatementRequest`. Assign and track a `statementUUID` (a random UUID per prepared statement instance) for server-side resource management.
+**Parameterless SQL**  
+Set `sql` to the full query string and leave `parameters` empty.
 
-**Callable Statement**  
-Stored-procedure calls with IN, OUT, and INOUT parameters. The stored-procedure call string is prepared on the server via `callResource` with `CallType.CALL_PREPARE` first. The returned `resourceUUID` becomes the Callable Statement handle. Parameters are registered by index and type, and OUT/INOUT values are retrieved from `CallResourceResponse.values` after execution.
+**Parameterized SQL**  
+Set `sql` with `?` positional placeholders and populate the `parameters` list with one `ParameterProto` per `?`. Parameters are accumulated locally and sent together in a single `StatementRequest`. Assign a `statementUUID` (a random UUID per logical prepared-statement instance) so the server can track resources tied to that statement.
+
+**Stored-procedure calls**  
+First call `callResource` with `CallType.CALL_PREPARE` to register the procedure on the server and receive a `resourceUUID`. Then call `callResource` with `CallType.CALL_EXECUTE` to run it, passing IN parameters and retrieving OUT/INOUT values from `CallResourceResponse.values`.
 
 ### StatementRequest structure
 
 ```
 StatementRequest {
     session:       SessionInfo   // current session
-    sql:           string        // the SQL (or call string)
-    parameters:    ParameterProto[]  // indexed parameters
-    statementUUID: string        // UUID for this statement (for resource tracking)
+    sql:           string        // the SQL string
+    parameters:    ParameterProto[]  // indexed parameters (empty for parameterless SQL)
+    statementUUID: string        // random UUID per statement instance
     properties:    PropertyEntry[]   // optional per-statement properties
 }
 ```
@@ -591,6 +848,62 @@ StatementRequest {
 - Use `executeUpdate` for INSERT / UPDATE / DELETE / DDL — returns `OpResult` with `type = INTEGER` containing affected row count.
 - Use `executeQuery` for SELECT — returns a server-streaming response. Consume the first `OpResult` to get the initial batch; call `fetchNextRows` for subsequent pages (see §18).
 - After any execution, update the local `SessionInfo` from the `OpResult.session` field.
+
+### Pseudo-code
+
+```python
+# DML — INSERT / UPDATE / DELETE (use executeUpdate)
+resp = stub.executeUpdate(StatementRequest(
+    session       = session,
+    sql           = "INSERT INTO orders(customer, amount) VALUES(?, ?)",
+    parameters    = [
+        ParameterProto(index=1, type=PT_STRING, values=[ParameterValue(string_value="Alice")]),
+        ParameterProto(index=2, type=PT_INT,    values=[ParameterValue(int_value=42)])
+    ],
+    statementUUID = new_uuid()   # random UUID per statement instance
+))
+session       = resp.session           # always update local session
+rows_affected = resp.value.int_value   # e.g., 1
+
+# Query — SELECT (use executeQuery, which is server-streaming)
+req = StatementRequest(
+    session       = session,
+    sql           = "SELECT id, name FROM orders WHERE customer = ?",
+    parameters    = [ParameterProto(index=1, type=PT_STRING,
+                                    values=[ParameterValue(string_value="Alice")])],
+    statementUUID = new_uuid()
+)
+result_set_uuid = None
+for op_result in stub.executeQuery(req):   # iterate the server-streaming response
+    qr = op_result.query_result
+    if result_set_uuid is None:
+        result_set_uuid = qr.resultSetUUID
+        labels = qr.labels     # e.g., ["id", "name"]
+    for row in qr.rows:
+        id_val   = row.values[0].int_value
+        name_val = row.values[1].string_value
+    session = op_result.session
+# Fetch additional pages → see §18
+
+# Stored procedure — CALL_PREPARE then CALL_EXECUTE
+prep_resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_CALLABLE_STATEMENT,
+    target       = TargetCall(callType=CALL_PREPARE, resourceName="{call my_proc(?,?)}",
+                              params=[ParameterValue(int_value=1)])   # IN param
+))
+proc_uuid = prep_resp.resourceUUID
+session   = prep_resp.session
+
+exec_resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_CALLABLE_STATEMENT,
+    resourceUUID = proc_uuid,
+    target       = TargetCall(callType=CALL_EXECUTE)
+))
+out_value = exec_resp.values[0]   # first OUT/INOUT parameter value
+session   = exec_resp.session
+```
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`Statement`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/Statement.java): `executeQuery(sql)` → `statementService.executeQuery(...)`; `executeUpdate(sql)` → `statementService.executeUpdate(...)`; holds `statementUUID` (assigned lazily); `execute(sql)` handles the dual-result case.
@@ -771,6 +1084,45 @@ Scrollable result sets support cursor positioning through `callResource` with `R
 | `previous()` | `CALL_PREVIOUS` |
 | `close()` | `CALL_CLOSE` |
 
+### Pseudo-code
+
+```python
+# After executeQuery stream closes, fetch additional pages with fetchNextRows
+result_set_uuid = ...   # captured from the first op_result (§15)
+all_rows = []
+while True:
+    resp = stub.fetchNextRows(ResultSetFetchRequest(
+        session       = session,
+        resultSetUUID = result_set_uuid,
+        size          = 500               # rows per page
+    ))
+    session = resp.session
+    if not resp.query_result.rows:
+        break   # no more rows — result set exhausted
+    all_rows.extend(resp.query_result.rows)
+
+# Close the result set explicitly when done
+stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_RESULT_SET,
+    resourceUUID = result_set_uuid,
+    target       = TargetCall(callType=CALL_CLOSE)
+))
+
+# Cursor navigation — jump to an absolute row (scrollable result sets only)
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_RESULT_SET,
+    resourceUUID = result_set_uuid,
+    target       = TargetCall(
+        callType = CALL_ABSOLUTE,
+        params   = [ParameterValue(int_value=10)]   # jump to row 10
+    )
+))
+session      = resp.session
+current_row  = resp.values   # column values for row 10
+```
+
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`ResultSet`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/ResultSet.java): `next()` drives the multi-block iteration; `setNextOpResult()` loads a new batch from the iterator; `nextWithSessionUpdate()` updates the session from each block. All `getXxx(columnIndex)` methods call `ProtoConverter.fromParameterValue()` on the column's `ParameterValue`.
 > - `ojp-jdbc-driver` — [`RemoteProxyResultSet`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/RemoteProxyResultSet.java): base class holding `resultSetUUID` and `statementService`; all scrollable-cursor operations issue `callResource(RES_RESULT_SET, CALL_FIRST/LAST/ABSOLUTE/…)`.
@@ -831,6 +1183,47 @@ Receive a server-streaming response of `LobDataBlock` messages. Concatenate the 
 ### LOB and session stickiness
 
 LOB handles are server-side objects. A connection that has an open LOB must remain bound to the same server (§6). Do not reroute such connections during failover; instead surface the error to the caller.
+
+### Pseudo-code
+
+```python
+CHUNK_SIZE = 64 * 1024   # 64 KB recommended chunk size
+
+# --- Write a LOB (createLob is client-streaming) ---
+def write_lob(stub, session, data_bytes, lob_type=LT_BLOB):
+    def generate_blocks():
+        for offset in range(0, len(data_bytes), CHUNK_SIZE):
+            yield LobDataBlock(
+                session  = session,
+                position = offset,
+                data     = data_bytes[offset : offset + CHUNK_SIZE],
+                lobType  = lob_type
+            )
+    lob_ref = stub.createLob(generate_blocks())   # client-streaming → single LobReference
+    # lob_ref.uuid         → the LOB handle; pass as parameter to executeUpdate (see §16)
+    # lob_ref.bytesWritten → sanity check
+    return lob_ref.uuid
+
+# Bind the LOB UUID when executing a statement
+lob_uuid = write_lob(stub, session, my_bytes)
+stub.executeUpdate(StatementRequest(
+    session    = session,
+    sql        = "INSERT INTO docs(content) VALUES(?)",
+    parameters = [ParameterProto(index=1, type=PT_BLOB,
+                                 values=[ParameterValue(string_value=lob_uuid)])]
+))
+
+# --- Read a LOB (readLob is server-streaming) ---
+def read_lob(stub, session, lob_uuid, lob_type=LT_BLOB, max_bytes=10_000_000):
+    req = ReadLobRequest(
+        lobReference = LobReference(uuid=lob_uuid, session=session, lobType=lob_type),
+        position     = 1,           # 1-based start position
+        length       = max_bytes
+    )
+    return b"".join(block.data for block in stub.readLob(req))
+
+content = read_lob(stub, session, lob_uuid)
+```
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`LobServiceImpl`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/jdbc/LobServiceImpl.java): `sendBytes(lobType, pos, inputStream)` opens the client-streaming `createLob` call, chunks the data into `LobDataBlock` messages, and returns the `LobReference`. `parseReceivedBlocks(Iterator<LobDataBlock>)` reassembles chunks from a `readLob` stream into an `InputStream`.
@@ -895,6 +1288,52 @@ Always update the local `SessionInfo` from `response.session`.
 ### CallType reference (47 codes)
 
 `CALL_SET`, `CALL_GET`, `CALL_IS`, `CALL_ALL`, `CALL_NULLS`, `CALL_USES`, `CALL_SUPPORTS`, `CALL_STORES`, `CALL_NULL`, `CALL_DOES`, `CALL_DATA`, `CALL_NEXT`, `CALL_CLOSE`, `CALL_WAS`, `CALL_CLEAR`, `CALL_FIND`, `CALL_BEFORE`, `CALL_AFTER`, `CALL_FIRST`, `CALL_LAST`, `CALL_ABSOLUTE`, `CALL_RELATIVE`, `CALL_PREVIOUS`, `CALL_ROW`, `CALL_UPDATE`, `CALL_INSERT`, `CALL_DELETE`, `CALL_REFRESH`, `CALL_CANCEL`, `CALL_MOVE`, `CALL_OWN`, `CALL_OTHERS`, `CALL_UPDATES`, `CALL_DELETES`, `CALL_INSERTS`, `CALL_LOCATORS`, `CALL_AUTO`, `CALL_GENERATED`, `CALL_RELEASE`, `CALL_NATIVE`, `CALL_PREPARE`, `CALL_ROLLBACK`, `CALL_ABORT`, `CALL_EXECUTE`, `CALL_ADD`, `CALL_ENQUOTE`, `CALL_REGISTER`, `CALL_LENGTH`
+
+### Pseudo-code
+
+```python
+# --- Get the database catalog name (connection-level metadata) ---
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_CONNECTION,
+    resourceUUID = "",        # empty for connection-level calls
+    target       = TargetCall(callType=CALL_GET, resourceName="Catalog")
+))
+catalog_name = resp.values[0].string_value
+session      = resp.session   # always update local session
+
+# --- Check a database capability ---
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_CONNECTION,
+    target       = TargetCall(callType=CALL_SUPPORTS, resourceName="Transactions")
+))
+supports_transactions = resp.values[0].bool_value
+session               = resp.session
+
+# --- Cancel a running statement ---
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_STATEMENT,
+    resourceUUID = statement_uuid,   # UUID of the statement to cancel
+    target       = TargetCall(callType=CALL_CANCEL)
+))
+session = resp.session
+
+# --- Chained call: get Schema and Catalog in one round-trip ---
+resp = stub.callResource(CallResourceRequest(
+    session      = session,
+    resourceType = RES_CONNECTION,
+    target       = TargetCall(
+        callType     = CALL_GET,
+        resourceName = "Schema",
+        nextCall     = TargetCall(callType=CALL_GET, resourceName="Catalog")
+    )
+))
+schema_name  = resp.values[0].string_value
+catalog_name = resp.values[1].string_value
+session      = resp.session
+```
 
 > **Reference implementation:**
 > - `ojp-jdbc-driver` — [`StatementServiceGrpcClient.callResource(CallResourceRequest)`](../../ojp-jdbc-driver/src/main/java/org/openjproxy/grpc/client/StatementServiceGrpcClient.java): the single-node gRPC call.
