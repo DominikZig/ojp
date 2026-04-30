@@ -1,7 +1,7 @@
 # OJP Multi-Language Client Specification
 
 > **Status:** Draft — April 2026
-> **Last updated:** 2026-04-30 (reflects all changes merged to `main` up to and including this date)
+> **Last updated:** 2026-04-30
 > **Scope:** Defines every aspect that a new OJP client library (in any language) must implement to be fully compatible with an OJP server. Written language-agnostically; Java-specific concepts are labelled as reference implementation only.
 > **Reference implementation:** `ojp-jdbc-driver` module.
 > **Protocol source of truth:** `ojp-grpc-commons/src/main/proto/StatementService.proto` and `echo.proto`.

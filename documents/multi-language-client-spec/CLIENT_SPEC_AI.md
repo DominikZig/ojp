@@ -1,7 +1,7 @@
 # OJP Client Specification — Machine-Oriented Reference
 
 > **Status:** Normative — April 2026
-> **Last updated:** 2026-04-30 (reflects all changes merged to `main` up to and including this date)
+> **Last updated:** 2026-04-30
 > **Scope:** Defines the complete behavioral contract for any OJP client implementation.
 > **Keywords:** MUST, MUST NOT, SHOULD, MAY as defined in RFC 2119.
 > **Protocol source:** `ojp-grpc-commons/src/main/proto/StatementService.proto`, `echo.proto`
