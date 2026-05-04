@@ -58,7 +58,8 @@ spring:
 # ============================================================================
 # OJP connection pool settings (✅ PER-DATASOURCE — can be prefixed)
 # ============================================================================
-# These settings tune the NON-XA HikariCP pool managed by the OJP proxy server.
+# These settings tune the NON-XA connection pool managed by the OJP proxy server
+# (HikariCP by default; a different pool implementation can be supplied via the SPI).
 # They are sent to the server on the first connection and stored per datasource.
 #
 # To target a named datasource, embed its name in the JDBC URL:

@@ -97,8 +97,6 @@ ojp.connection.pool.max-lifetime=1800000
 ojp.grpc.max-inbound-message-size=16777216
 ```
 
-The starter's `OjpSystemPropertiesBridge` bean propagates all `ojp.*` properties to JVM system properties before any DataSource bean is created, so the OJP driver's `DatasourcePropertiesLoader` picks them up with the highest precedence—overriding any `ojp.properties` file on the classpath.
-
 ### Per-Datasource vs. Global Settings
 
 Not all OJP settings accept a datasource name prefix. Pool settings are scoped per datasource; operational settings (health checks, redistribution, load-aware routing, retry) are cluster-wide.
