@@ -2,6 +2,8 @@ name: Meterian Scanner
 
 on:
   push:
+    branches-ignore:
+      - '**meterian-bot/pr**'
   schedule:
     - cron: '0 0 * * *'
 
@@ -10,11 +12,16 @@ jobs:
     name: Meterian client scan
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Meterian Scanner
         uses: MeterianHQ/meterian-github-action@v1.0.13
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           oss: true
+          autofix_security: safe
+          autofix_with_pr: true
