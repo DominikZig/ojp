@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java-version: [ 11, 17, 21, 22 ]
+        java-version: [ 11, 17, 21, 22, 24 ]
 
     steps:
 
@@ -71,7 +71,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -179,7 +179,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -317,7 +317,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -413,7 +413,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -500,7 +500,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -668,7 +668,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -769,7 +769,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -1172,7 +1172,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -1674,7 +1674,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
@@ -1777,7 +1777,7 @@ jobs:
       - name: Set up JDK 22 for build
         uses: actions/setup-java@v5
         with:
-          java-version: 22
+          java-version: 24
           distribution: 'temurin'
           cache: maven
 
