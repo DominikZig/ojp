@@ -63,6 +63,21 @@ This architecture lets many application instances scale independently without ov
 
 A non-Java OJP client replaces the `ojp-jdbc-driver` module. It must implement all 21 `StatementService` RPCs plus `EchoService.Echo`, handle the `SessionInfo` propagation contract on every call, and manage endpoint health, failover, and session stickiness on the client side. The server handles everything else: real connection management, transaction state, LOB storage, cursor state, and query caching.
 
+### Language Equivalents
+
+Each target language has its own standard database-access API. When implementing an OJP client, map OJP's connection/statement/result-set concepts to that language's native API:
+
+| Language | JDBC Equivalent / Standard API | Description |
+| :--- | :--- | :--- |
+| **Go** | `database/sql` | The standard Go package providing a generic interface for SQL-like databases. |
+| **Python** | DB-API 2.0 (`pep-249`) | A standard specification followed by almost all Python database drivers (e.g., `psycopg2`, `sqlite3`). |
+| **C# / .NET** | `ADO.NET` | The foundational data access technology for .NET, using standard classes like `DbConnection`. |
+| **C++** | `ODBC` | The "Open Database Connectivity" standard used for cross-platform database-agnostic apps. |
+| **Node.js** | Common Driver Patterns / ORMs | Relies on community standards or ORMs like Sequelize or Prisma rather than a single built-in API. |
+| **Ruby** | `DBI` / `Active Record` | Uses the Database Interface (DBI) module or the Active Record abstraction layer. |
+| **PHP** | `PDO` (PHP Data Objects) | A lightweight, consistent interface for accessing various databases in PHP. |
+| **Dart** | `sql_conn` / `drift` | Uses specific community packages or the Drift library for structured data access. |
+
 > **Important operational rule:** Application-side connection pools **must be disabled** when using OJP. Double-pooling causes incorrect behavior and resource waste. This is the single most common misconfiguration.
 
 ---
