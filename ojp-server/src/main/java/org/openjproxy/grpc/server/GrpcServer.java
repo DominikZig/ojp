@@ -211,6 +211,10 @@ public class GrpcServer {
     }
 
     private static void shutdownExecutor(ExecutorService executor, String executorName) {
+        if (executor == null) {
+            return;
+        }
+
         executor.shutdown();
         try {
             if (!executor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
