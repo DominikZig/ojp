@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 
 public class GrpcServer {
     private static final Logger logger = LoggerFactory.getLogger(GrpcServer.class);
+    private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 30;
 
     public static void main(String[] args) throws IOException, InterruptedException {
         // Initialize health status manager
@@ -212,7 +213,7 @@ public class GrpcServer {
     private static void shutdownExecutor(ExecutorService executor, String executorName) {
         executor.shutdown();
         try {
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+            if (!executor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 logger.warn("{} did not terminate gracefully, forcing shutdown", executorName);
                 executor.shutdownNow();
             }
