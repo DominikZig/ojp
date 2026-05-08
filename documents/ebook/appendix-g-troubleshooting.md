@@ -75,7 +75,7 @@ The JDBC driver must be accessible to your application's classloader. For Maven 
 <dependency>
     <groupId>org.openjproxy</groupId>
     <artifactId>ojp-jdbc-driver</artifactId>
-    <version>0.4.9-beta</version>
+    <version>0.4.10-beta</version>
 </dependency>
 ```
 
