@@ -21,6 +21,7 @@ public class ServerConfiguration {
     private static final String OPENTELEMETRY_ENABLED_KEY = "ojp.telemetry.enabled";
     private static final String OPENTELEMETRY_ENDPOINT_KEY = "ojp.opentelemetry.endpoint";
     private static final String THREAD_POOL_SIZE_KEY = "ojp.server.threadPoolSize";
+    private static final String VIRTUAL_THREADS_ENABLED_KEY = "ojp.server.virtualThreads.enabled";
     private static final String MAX_REQUEST_SIZE_KEY = "ojp.server.maxRequestSize";
     private static final String LOG_LEVEL_KEY = "ojp.server.logLevel";
     private static final String ALLOWED_IPS_KEY = "ojp.server.allowedIps";
@@ -86,6 +87,7 @@ public class ServerConfiguration {
     public static final boolean DEFAULT_OPENTELEMETRY_ENABLED = true;
     public static final String DEFAULT_OPENTELEMETRY_ENDPOINT = "";
     public static final int DEFAULT_THREAD_POOL_SIZE = 200;
+    public static final boolean DEFAULT_VIRTUAL_THREADS_ENABLED = true;
     public static final int DEFAULT_MAX_REQUEST_SIZE = 4 * 1024 * 1024; // 4MB
     public static final String DEFAULT_LOG_LEVEL = "INFO";
     public static final boolean DEFAULT_ACCESS_LOGGING = false;
@@ -155,6 +157,7 @@ public class ServerConfiguration {
     private final boolean openTelemetryEnabled;
     private final String openTelemetryEndpoint;
     private final int threadPoolSize;
+    private final boolean virtualThreadsEnabled;
     private final int maxRequestSize;
     private final String logLevel;
     private final List<String> allowedIps;
@@ -220,6 +223,7 @@ public class ServerConfiguration {
         this.openTelemetryEnabled = getBooleanProperty(OPENTELEMETRY_ENABLED_KEY, DEFAULT_OPENTELEMETRY_ENABLED);
         this.openTelemetryEndpoint = getStringProperty(OPENTELEMETRY_ENDPOINT_KEY, DEFAULT_OPENTELEMETRY_ENDPOINT);
         this.threadPoolSize = getIntProperty(THREAD_POOL_SIZE_KEY, DEFAULT_THREAD_POOL_SIZE);
+        this.virtualThreadsEnabled = getBooleanProperty(VIRTUAL_THREADS_ENABLED_KEY, DEFAULT_VIRTUAL_THREADS_ENABLED);
         this.maxRequestSize = getIntProperty(MAX_REQUEST_SIZE_KEY, DEFAULT_MAX_REQUEST_SIZE);
         this.logLevel = getStringProperty(LOG_LEVEL_KEY, DEFAULT_LOG_LEVEL);
         this.allowedIps = getListProperty(ALLOWED_IPS_KEY, DEFAULT_ALLOWED_IPS);
@@ -374,7 +378,12 @@ public class ServerConfiguration {
         logger.info("  Prometheus Port: {}", prometheusPort);
         logger.info("  OpenTelemetry Enabled: {}", openTelemetryEnabled);
         logger.info("  OpenTelemetry Endpoint: {}", openTelemetryEndpoint.isEmpty() ? "default" : openTelemetryEndpoint);
-        logger.info("  Thread Pool Size: {} (ignored, virtual threads are used)", threadPoolSize);
+        logger.info("  Virtual Threads Enabled: {}", virtualThreadsEnabled);
+        if (virtualThreadsEnabled) {
+            logger.info("  Thread Pool Size: {} (used only when virtual threads are disabled)", threadPoolSize);
+        } else {
+            logger.info("  Thread Pool Size: {}", threadPoolSize);
+        }
         logger.info("  Max Request Size: {} bytes", maxRequestSize);
         logger.info("  Log Level: {}", logLevel);
         logger.info("  Allowed IPs: {}", allowedIps);
@@ -460,6 +469,10 @@ public class ServerConfiguration {
 
     public int getThreadPoolSize() {
         return threadPoolSize;
+    }
+
+    public boolean isVirtualThreadsEnabled() {
+        return virtualThreadsEnabled;
     }
 
     public int getMaxRequestSize() {

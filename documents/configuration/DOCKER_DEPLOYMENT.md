@@ -146,6 +146,7 @@ docker run -d \
   -e OJP_SERVER_PORT=8080 \
   -e OJP_PROMETHEUS_PORT=9091 \
   -e OJP_SERVER_LOGLEVEL=DEBUG \
+  -e OJP_SERVER_VIRTUALTHREADS_ENABLED=false \
   -e OJP_SERVER_THREADPOOLSIZE=300 \
   rrobetti/ojp:0.4.10-beta
 ```
@@ -192,6 +193,7 @@ docker run -d \
     -Duser.timezone=UTC" \
   -e OJP_SERVER_PORT=1059 \
   -e OJP_PROMETHEUS_PORT=9159 \
+  -e OJP_SERVER_VIRTUALTHREADS_ENABLED=false \
   -e OJP_SERVER_THREADPOOLSIZE=300 \
   -e OJP_SERVER_LOGLEVEL=INFO \
   -e OJP_SERVER_LOG_FILE=/var/log/ojp/server.log \
@@ -227,6 +229,7 @@ services:
         -Duser.timezone=UTC
       OJP_SERVER_PORT: 1059
       OJP_PROMETHEUS_PORT: 9159
+      OJP_SERVER_VIRTUALTHREADS_ENABLED: "false"
       OJP_SERVER_THREADPOOLSIZE: 300
       OJP_SERVER_LOGLEVEL: INFO
       OJP_SERVER_LOG_FILE: /var/log/ojp/server.log
@@ -293,6 +296,7 @@ docker run -d \
   -p 1059:1059 \
   -p 9159:9159 \
   -e JAVA_TOOL_OPTIONS="-Xmx16g -Xms8g -XX:+UseG1GC -Dfile.encoding=UTF-8 -Duser.timezone=America/New_York" \
+  -e OJP_SERVER_VIRTUALTHREADS_ENABLED=false \
   -e OJP_SERVER_THREADPOOLSIZE=500 \
   -e OJP_SERVER_LOGLEVEL=INFO \
   -e OJP_SERVER_ALLOWEDIPS="10.0.0.0/8,172.16.0.0/12" \
@@ -322,6 +326,7 @@ docker run -d \
   --name ojp-lowlatency \
   -p 1059:1059 \
   -e JAVA_TOOL_OPTIONS="-Xmx8g -Xms8g -XX:+UseZGC -XX:+UnlockExperimentalVMOptions -Dfile.encoding=UTF-8 -Duser.timezone=UTC" \
+  -e OJP_SERVER_VIRTUALTHREADS_ENABLED=false \
   -e OJP_SERVER_THREADPOOLSIZE=400 \
   rrobetti/ojp:0.4.10-beta
 ```
@@ -420,8 +425,9 @@ If you see `OutOfMemoryError`:
 -e JAVA_TOOL_OPTIONS="-Xmx4g -verbose:gc -Xlog:gc*:file=/var/log/ojp/gc.log"
 ```
 
-2. Increase thread pool:
+2. If needed, disable virtual threads and increase platform thread pool:
 ```bash
+-e OJP_SERVER_VIRTUALTHREADS_ENABLED=false
 -e OJP_SERVER_THREADPOOLSIZE=500
 ```
 

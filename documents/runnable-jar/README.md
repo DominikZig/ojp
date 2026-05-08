@@ -222,7 +222,8 @@ The OJP Server can be configured using system properties. Common options include
 | `ojp.server.port` | `1059` | gRPC server port |
 | `ojp.prometheus.port` | `9159` | Prometheus metrics port |
 | `ojp.libs.path` | `./ojp-libs` | Path to external libraries directory (for proprietary drivers) |
-| `ojp.thread.pool.size` | `200` | Server thread pool size |
+| `ojp.server.virtualThreads.enabled` | `true` | Enable Java virtual threads for gRPC request handling |
+| `ojp.server.threadPoolSize` | `200` | Fixed thread pool size when virtual threads are disabled |
 | `ojp.max.request.size` | `4194304` | Maximum request size in bytes |
 | `ojp.connection.idle.timeout` | `30000` | Connection idle timeout in milliseconds |
 | `ojp.circuit.breaker.timeout` | `60000` | Circuit breaker timeout in milliseconds |
@@ -238,7 +239,8 @@ java -Duser.timezone=UTC \
      -Dojp.server.port=8080 \
      -Dojp.prometheus.port=9091 \
      -Dojp.libs.path=./ojp-libs \
-     -Dojp.thread.pool.size=100 \
+     -Dojp.server.virtualThreads.enabled=false \
+     -Dojp.server.threadPoolSize=100 \
      -Dojp.max.request.size=8388608 \
      -jar ojp-server-0.4.10-beta-shaded.jar
 ```
@@ -342,7 +344,8 @@ java -Duser.timezone=UTC \
      -Xmx4g \
      -XX:+UseG1GC \
      -XX:MaxGCPauseMillis=100 \
-     -Dojp.thread.pool.size=500 \
+     -Dojp.server.virtualThreads.enabled=false \
+     -Dojp.server.threadPoolSize=500 \
      -jar ojp-server-0.4.10-beta-shaded.jar
 ```
 

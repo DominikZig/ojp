@@ -22,6 +22,7 @@ class ServerConfigurationTest {
         System.clearProperty("ojp.telemetry.enabled");
         System.clearProperty("ojp.opentelemetry.endpoint");
         System.clearProperty("ojp.server.threadPoolSize");
+        System.clearProperty("ojp.server.virtualThreads.enabled");
         System.clearProperty("ojp.server.maxRequestSize");
         System.clearProperty("ojp.server.logLevel");
         System.clearProperty("ojp.server.allowedIps");
@@ -40,6 +41,7 @@ class ServerConfigurationTest {
         assertEquals(ServerConfiguration.DEFAULT_OPENTELEMETRY_ENABLED, config.isOpenTelemetryEnabled());
         assertEquals(ServerConfiguration.DEFAULT_OPENTELEMETRY_ENDPOINT, config.getOpenTelemetryEndpoint());
         assertEquals(ServerConfiguration.DEFAULT_THREAD_POOL_SIZE, config.getThreadPoolSize());
+        assertEquals(ServerConfiguration.DEFAULT_VIRTUAL_THREADS_ENABLED, config.isVirtualThreadsEnabled());
         assertEquals(ServerConfiguration.DEFAULT_MAX_REQUEST_SIZE, config.getMaxRequestSize());
         assertEquals(ServerConfiguration.DEFAULT_LOG_LEVEL, config.getLogLevel());
         assertEquals(ServerConfiguration.DEFAULT_ALLOWED_IPS, config.getAllowedIps());
@@ -58,6 +60,7 @@ class ServerConfigurationTest {
         System.setProperty("ojp.telemetry.enabled", "false");
         System.setProperty("ojp.opentelemetry.endpoint", "http://localhost:4317");
         System.setProperty("ojp.server.threadPoolSize", "100");
+        System.setProperty("ojp.server.virtualThreads.enabled", "false");
         System.setProperty("ojp.server.maxRequestSize", "8388608"); // 8MB
         System.setProperty("ojp.server.logLevel", "DEBUG");
         System.setProperty("ojp.server.allowedIps", "192.168.1.0/24,10.0.0.1");
@@ -72,6 +75,7 @@ class ServerConfigurationTest {
         assertFalse(config.isOpenTelemetryEnabled());
         assertEquals("http://localhost:4317", config.getOpenTelemetryEndpoint());
         assertEquals(100, config.getThreadPoolSize());
+        assertFalse(config.isVirtualThreadsEnabled());
         assertEquals(8388608, config.getMaxRequestSize());
         assertEquals("DEBUG", config.getLogLevel());
         assertEquals(List.of("192.168.1.0/24", "10.0.0.1"), config.getAllowedIps());

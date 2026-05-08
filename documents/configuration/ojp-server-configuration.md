@@ -15,7 +15,8 @@ The server supports configuration through both JVM system properties and environ
 |--------------------------------------|--------------------------------------|---------|-----------|--------------------------------------------------------|---------|
 | `ojp.server.port`                    | `OJP_SERVER_PORT`                    | int     | 1059      | gRPC server port                                       | 0.2.0-beta |
 | `ojp.prometheus.port`                | `OJP_PROMETHEUS_PORT`                | int     | 9159      | Prometheus metrics HTTP server port                    | 0.2.0-beta |
-| `ojp.server.threadPoolSize`          | `OJP_SERVER_THREADPOOLSIZE`          | int     | 200       | gRPC server thread pool size                           | 0.2.0-beta |
+| `ojp.server.virtualThreads.enabled`  | `OJP_SERVER_VIRTUALTHREADS_ENABLED`  | boolean | true      | Use Java virtual threads for gRPC request handling     | 0.4.11-beta |
+| `ojp.server.threadPoolSize`          | `OJP_SERVER_THREADPOOLSIZE`          | int     | 200       | Fixed thread pool size when virtual threads are disabled | 0.2.0-beta |
 | `ojp.server.maxRequestSize`          | `OJP_SERVER_MAXREQUESTSIZE`          | int     | 4194304   | Maximum request size in bytes (4MB)                    | 0.2.0-beta |
 | `ojp.server.connectionIdleTimeout`   | `OJP_SERVER_CONNECTIONIDLETIMEOUT`   | long    | 30000     | Connection idle timeout in milliseconds                | 0.2.0-beta |
 
@@ -296,6 +297,7 @@ java -Duser.timezone=UTC \
      -Dojp.server.port=8080 \
      -Dojp.prometheus.port=9091 \
      -Dojp.telemetry.enabled=false \
+     -Dojp.server.virtualThreads.enabled=false \
      -Dojp.server.threadPoolSize=100 \
      -Dojp.server.circuitBreakerTimeout=120000 \
      -Dojp.server.circuitBreakerThreshold=3 \
@@ -313,6 +315,7 @@ Set configuration using environment variables:
 export OJP_SERVER_PORT=8080
 export OJP_PROMETHEUS_PORT=9091
 export OJP_OPENTELEMETRY_ENABLED=false
+export OJP_SERVER_VIRTUALTHREADS_ENABLED=false
 export OJP_SERVER_THREADPOOLSIZE=100
 export OJP_SERVER_CIRCUITBREAKERTIMEOUT=120000
 export OJP_SERVER_CIRCUITBREAKERTHRESHOLD=3
@@ -458,6 +461,7 @@ java -Duser.timezone=UTC \
      -Dojp.server.log.file=/var/log/ojp/server.log \
      -Dojp.server.log.maxHistory=90 \
      -Dojp.server.log.totalSizeCap=10GB \
+     -Dojp.server.virtualThreads.enabled=false \
      -Dojp.server.threadPoolSize=300 \
      -Dojp.server.circuitBreakerTimeout=60000 \
      -Dojp.server.slowQuerySegregation.enabled=true \
@@ -473,6 +477,7 @@ java -Duser.timezone=UTC \
 ```bash
 java -Duser.timezone=UTC \
      -Dojp.server.port=1059 \
+     -Dojp.server.virtualThreads.enabled=false \
      -Dojp.server.threadPoolSize=500 \
      -Dojp.server.maxRequestSize=16777216 \
      -Dojp.server.connectionIdleTimeout=60000 \
@@ -493,6 +498,7 @@ metadata:
 data:
   OJP_SERVER_PORT: "1059"
   OJP_PROMETHEUS_PORT: "9159"
+  OJP_SERVER_VIRTUALTHREADS_ENABLED: "false"
   OJP_SERVER_THREADPOOLSIZE: "200"
   OJP_SERVER_LOGLEVEL: "INFO"
   OJP_SERVER_LOG_FILE: "/var/log/ojp/server.log"
@@ -524,7 +530,7 @@ data:
 1. **Server won't start**: Check IP whitelist configuration and port availability
 2. **Can't connect**: Verify client IP is in the allowed list
 3. **Metrics unavailable**: Check Prometheus port and IP whitelist
-4. **Performance issues**: Adjust thread pool size, connection timeouts, and slow query segregation settings
+4. **Performance issues**: Tune virtual thread mode, thread pool size (if virtual threads are disabled), connection timeouts, and slow query segregation settings
 5. **Slow queries blocking fast ones**: Enable slow query segregation and tune slot percentages
 
 ### Debugging Configuration

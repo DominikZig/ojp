@@ -28,7 +28,7 @@ Let's start with the foundational settings that control how your OJP server oper
 
 The server also exposes a separate Prometheus metrics endpoint on port 9159 by default. This separation is intentional—it allows you to apply different network policies and access controls to your operational metrics versus your database traffic. In production, you might expose the gRPC port only to your application network while making the Prometheus endpoint available to your monitoring infrastructure on a separate network segment.
 
-Performance tuning starts with the thread pool size, which defaults to 200 threads. This setting controls how many concurrent client requests the server can handle. The right value depends on your workload characteristics and server resources. A CPU-intensive workload might benefit from fewer threads (closer to the number of CPU cores), while I/O-bound workloads can often handle more threads. Start with the default and adjust based on your monitoring data.
+By default, OJP uses Java virtual threads for gRPC request handling. This gives high concurrency without tuning a large platform thread pool. If you need conventional platform threads, set `ojp.server.virtualThreads.enabled=false`; in that mode, `ojp.server.threadPoolSize` (default 200) controls concurrency.
 
 **[IMAGE PROMPT: Create a technical server architecture diagram showing OJP Server as a central component with two network interfaces: one labeled "gRPC Port :1059" (shown with database connection icons) and another labeled "Prometheus Port :9159" (shown with metrics/monitoring icons). Include a thread pool visualization showing multiple worker threads (default: 200) handling concurrent requests. Use professional blue and gray color scheme with clear labels and connection lines. Style: Modern technical architecture diagram.]**
 
@@ -47,6 +47,7 @@ Here's how you configure these core settings:
 java -Duser.timezone=UTC \
      -Dojp.server.port=9059 \
      -Dojp.prometheus.port=9091 \
+     -Dojp.server.virtualThreads.enabled=false \
      -Dojp.server.threadPoolSize=100 \
      -Dojp.server.maxRequestSize=8388608 \
      -Dojp.server.connectionIdleTimeout=60000 \
@@ -58,6 +59,7 @@ Or using environment variables for container deployments:
 ```bash
 export OJP_SERVER_PORT=9059
 export OJP_PROMETHEUS_PORT=9091
+export OJP_SERVER_VIRTUALTHREADS_ENABLED=false
 export OJP_SERVER_THREADPOOLSIZE=100
 export OJP_SERVER_MAXREQUESTSIZE=8388608
 export OJP_SERVER_CONNECTIONIDLETIMEOUT=60000
@@ -361,6 +363,7 @@ For development environments, prioritize visibility and fast feedback. Use INFO 
 export OJP_SERVER_PORT=1059
 export OJP_SERVER_LOGLEVEL=DEBUG
 export OJP_PROMETHEUS_PORT=9159
+export OJP_SERVER_VIRTUALTHREADS_ENABLED=false
 export OJP_SERVER_THREADPOOLSIZE=50
 export OJP_SERVER_CIRCUITBREAKERTHRESHOLD=5
 export OJP_SERVER_ALLOWEDIPS="0.0.0.0/0"
@@ -374,7 +377,8 @@ Production environments require different trade-offs. Use ERROR or INFO logging 
 export OJP_SERVER_PORT=1059
 export OJP_SERVER_LOGLEVEL=ERROR  # Recommended for production performance
 export OJP_PROMETHEUS_PORT=9159
-export OJP_SERVER_THREADPOOLSIZE=200
+export OJP_SERVER_VIRTUALTHREADS_ENABLED=true
+# OJP_SERVER_THREADPOOLSIZE applies only when virtual threads are disabled
 export OJP_SERVER_CIRCUITBREAKERTHRESHOLD=3
 export OJP_SERVER_CIRCUITBREAKERTIMEOUT=60000
 export OJP_SERVER_ALLOWEDIPS="10.0.0.0/8"
