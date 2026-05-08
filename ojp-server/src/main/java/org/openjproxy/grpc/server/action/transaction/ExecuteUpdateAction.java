@@ -76,7 +76,7 @@ public class ExecuteUpdateAction implements Action<StatementRequest, OpResult> {
     @SneakyThrows
     @Override
     public void execute(ActionContext context, StatementRequest request, StreamObserver<OpResult> responseObserver) {
-        log.info("Executing update {}", request.getSql());
+        log.debug("Executing update {}", request.getSql());
 
         executeWithResilience(context, request, responseObserver,
                 () -> {

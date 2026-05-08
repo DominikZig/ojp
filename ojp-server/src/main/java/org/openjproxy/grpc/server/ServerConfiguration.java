@@ -374,7 +374,7 @@ public class ServerConfiguration {
         logger.info("  Prometheus Port: {}", prometheusPort);
         logger.info("  OpenTelemetry Enabled: {}", openTelemetryEnabled);
         logger.info("  OpenTelemetry Endpoint: {}", openTelemetryEndpoint.isEmpty() ? "default" : openTelemetryEndpoint);
-        logger.info("  Thread Pool Size: {}", threadPoolSize);
+        logger.info("  Thread Pool Size: {} (ignored, virtual threads are used)", threadPoolSize);
         logger.info("  Max Request Size: {} bytes", maxRequestSize);
         logger.info("  Log Level: {}", logLevel);
         logger.info("  Allowed IPs: {}", allowedIps);

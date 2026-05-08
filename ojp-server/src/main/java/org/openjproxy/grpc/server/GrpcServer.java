@@ -90,7 +90,7 @@ public class GrpcServer {
 
         NettyServerBuilder serverBuilder = NettyServerBuilder
                 .forPort(config.getServerPort())
-                .executor(Executors.newFixedThreadPool(config.getThreadPoolSize()))
+                .executor(Executors.newVirtualThreadPerTaskExecutor())
                 .maxInboundMessageSize(config.getMaxRequestSize())
                 .keepAliveTime(config.getConnectionIdleTimeout(), TimeUnit.MILLISECONDS)
                 .addService(statementService)

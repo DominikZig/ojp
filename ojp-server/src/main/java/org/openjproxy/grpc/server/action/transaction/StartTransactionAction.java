@@ -62,7 +62,7 @@ public class StartTransactionAction implements Action<SessionInfo, SessionInfo> 
      */
     @Override
     public void execute(ActionContext context, SessionInfo sessionInfo, StreamObserver<SessionInfo> responseObserver) {
-        log.info("Starting transaction");
+        log.debug("Starting transaction");
 
         // Process cluster health from the request
         ProcessClusterHealthAction.getInstance().execute(context, sessionInfo);

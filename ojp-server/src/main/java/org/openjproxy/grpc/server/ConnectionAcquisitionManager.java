@@ -62,26 +62,31 @@ public class ConnectionAcquisitionManager {
             throw new SQLException("DataSource is null for connection hash: " + connectionHash);
         }
 
-        // Capture pool state and queue depth before attempting acquisition (HikariCP-specific)
+        // Capture pool state and queue depth before attempting acquisition (HikariCP-specific).
+        // JMX bean calls acquire a brief lock on the pool; only invoke them when debug logging
+        // is enabled or a real metrics collector is configured to avoid contention on every
+        // connection acquisition under load.
         if (dataSource instanceof HikariDataSource) {
             HikariDataSource hikariDataSource = (HikariDataSource) dataSource;
-            try {
-                int activeConnections = hikariDataSource.getHikariPoolMXBean().getActiveConnections();
-                int idleConnections = hikariDataSource.getHikariPoolMXBean().getIdleConnections();
-                int totalConnections = hikariDataSource.getHikariPoolMXBean().getTotalConnections();
-                int threadsWaiting = hikariDataSource.getHikariPoolMXBean().getThreadsAwaitingConnection();
-                int maxPoolSize = hikariDataSource.getMaximumPoolSize();
-                int minIdle = hikariDataSource.getMinimumIdle();
+            if (log.isDebugEnabled() || !(poolMetrics instanceof NoOpPoolMetrics)) {
+                try {
+                    int activeConnections = hikariDataSource.getHikariPoolMXBean().getActiveConnections();
+                    int idleConnections = hikariDataSource.getHikariPoolMXBean().getIdleConnections();
+                    int totalConnections = hikariDataSource.getHikariPoolMXBean().getTotalConnections();
+                    int threadsWaiting = hikariDataSource.getHikariPoolMXBean().getThreadsAwaitingConnection();
+                    int maxPoolSize = hikariDataSource.getMaximumPoolSize();
+                    int minIdle = hikariDataSource.getMinimumIdle();
 
-                log.debug("Connection acquisition attempt for hash: {} - Active: {}, Idle: {}, Total: {}, Waiting: {}",
-                    connectionHash, activeConnections, idleConnections, totalConnections, threadsWaiting);
+                    log.debug("Connection acquisition attempt for hash: {} - Active: {}, Idle: {}, Total: {}, Waiting: {}",
+                        connectionHash, activeConnections, idleConnections, totalConnections, threadsWaiting);
 
-                // Emit current pool state metrics (includes queue depth via numWaiters)
-                poolMetrics.recordPoolState(poolName,
-                        activeConnections, idleConnections, threadsWaiting,
-                        maxPoolSize, minIdle, 0L, 0L, 0L, 0L);
-            } catch (Exception e) {
-                log.debug("Could not retrieve pool statistics for hash: {}", connectionHash);
+                    // Emit current pool state metrics (includes queue depth via numWaiters)
+                    poolMetrics.recordPoolState(poolName,
+                            activeConnections, idleConnections, threadsWaiting,
+                            maxPoolSize, minIdle, 0L, 0L, 0L, 0L);
+                } catch (Exception e) {
+                    log.debug("Could not retrieve pool statistics for hash: {}", connectionHash);
+                }
             }
         } else {
             log.debug("Connection acquisition attempt for hash: {} using {}",
