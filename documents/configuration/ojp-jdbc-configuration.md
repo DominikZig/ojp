@@ -22,7 +22,7 @@ The driver retries session termination **up to 3 times** only when the failure i
 
 The driver does **not** retry when the failure is not transient connectivity, for example:
 
-- connection or pool/session not found (`NOT_FOUND`)
+- pool or session not found (`NOT_FOUND`)
 - server-side `SQLException` / database error
 - other non-connection failures
 
