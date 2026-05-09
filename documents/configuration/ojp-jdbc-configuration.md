@@ -6,6 +6,32 @@ This document covers configuration options for the OJP JDBC driver, including cl
 
 The OJP JDBC driver supports configurable connection pool settings via an `ojp.properties` file with advanced multi-datasource capabilities. This allows customization of HikariCP connection pool behavior on a per-client basis with support for multiple named datasources for enhanced flexibility.
 
+## Connection Close Behavior
+
+When application code calls `Connection.close()`, the OJP JDBC driver now performs session termination as a **synchronous** operation.
+
+That means the close call waits for the server to acknowledge session termination instead of sending the request in a fire-and-forget way.
+
+### Retry Rules
+
+The driver retries session termination **up to 3 times** only when the failure is clearly connection-related, for example:
+
+- gRPC `UNAVAILABLE`
+- gRPC `DEADLINE_EXCEEDED`
+- equivalent transport/connectivity failures
+
+The driver does **not** retry when the failure is not transient connectivity, for example:
+
+- pool or session not found (`NOT_FOUND`)
+- server-side `SQLException` / database error
+- other non-connection failures
+
+### Why This Matters
+
+This makes `close()` more reliable during transient network issues and reduces the chance of leaving server-side sessions alive longer than necessary.
+
+If all 3 connection-level attempts fail, `close()` fails and surfaces the error to the caller.
+
 ## Multi-DataSource Configuration
 
 ### Flexibility and Operational Benefits

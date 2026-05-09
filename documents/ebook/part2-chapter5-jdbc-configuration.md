@@ -175,6 +175,28 @@ String orOpts = "jdbc:ojp[localhost:1059]_oracle:thin:@localhost:1521/XEPDB1?" +
 
 **Key Point**: OJP passes all database-specific parameters directly to the underlying driver. Configure SSL, timeouts, and other database settings as you normally would.
 
+### Connection Close Semantics
+
+When your application calls `Connection.close()`, the OJP JDBC driver terminates the server-side session **synchronously**. In practical terms, the close call waits for the termination RPC to complete instead of sending it as fire-and-forget traffic.
+
+This behavior is intentionally conservative because session termination is what releases the server-side session state that OJP uses to track transactional and result-set resources.
+
+#### Retry Behavior During Close
+
+If the termination call fails because of a **connection-level** problem, the driver retries it up to **3 times** before giving up. This retry applies to failures such as:
+
+- gRPC `UNAVAILABLE`
+- gRPC `DEADLINE_EXCEEDED`
+- comparable transport/connectivity failures
+
+The driver does **not** retry when the failure indicates that retrying will not help, such as:
+
+- `NOT_FOUND` / pool or session not found
+- server-side `SQLException`
+- other non-connectivity failures
+
+So the operational rule is simple: **`close()` now includes a bounded retry for transient connection failures, but not for logical or database errors.**
+
 ---
 
 ## 5.2 Connection Pool Settings
