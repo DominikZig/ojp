@@ -57,6 +57,7 @@ class H2OpenLoopLatencyIntegrationTest {
     private static final int OPEN_LOOP_WORKER_THREADS = 32;
     private static final long EXECUTOR_SHUTDOWN_TIMEOUT_MINUTES = 1L;
     private static final long MAX_WAIT_PARK_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
+    private static final long MIN_INTERVAL_NANOS = 1L;
 
     private static boolean isH2TestEnabled;
     private HikariDataSource dataSource;
@@ -182,7 +183,7 @@ class H2OpenLoopLatencyIntegrationTest {
                                  Map<StepType, List<Long>> stepLatencies,
                                  List<Integer> activeIds) throws SQLException {
         AtomicInteger nextInsertId = new AtomicInteger(INITIAL_ROWS + 1);
-        Object activeIdsListLock = new Object();
+        Object activeIdsLock = new Object();
         executeOpenLoopWorkload(WRITE_OPERATION_COUNT, WRITE_OPEN_LOOP_RATE_PER_SECOND, operationIndex -> {
             int operationType = operationIndex % WRITE_OPERATION_TYPE_COUNT;
             if (operationType == 0) {
@@ -199,12 +200,12 @@ class H2OpenLoopLatencyIntegrationTest {
                         sqlLatencies.get(SqlType.INSERT).add(latency);
                     }
                 });
-                synchronized (activeIdsListLock) {
+                synchronized (activeIdsLock) {
                     activeIds.add(newId);
                 }
             } else if (operationType == 1) {
                 int idToUpdate;
-                synchronized (activeIdsListLock) {
+                synchronized (activeIdsLock) {
                     idToUpdate = activeIds.get(ThreadLocalRandom.current().nextInt(activeIds.size()));
                 }
                 withInstrumentedConnection(stepLatencies, connection -> {
@@ -221,7 +222,7 @@ class H2OpenLoopLatencyIntegrationTest {
                 });
             } else {
                 int idToDelete;
-                synchronized (activeIdsListLock) {
+                synchronized (activeIdsLock) {
                     int deleteIndex = ThreadLocalRandom.current().nextInt(activeIds.size());
                     idToDelete = activeIds.remove(deleteIndex);
                 }
@@ -350,7 +351,7 @@ class H2OpenLoopLatencyIntegrationTest {
         }
         ExecutorService executorService = Executors.newFixedThreadPool(OPEN_LOOP_WORKER_THREADS);
         List<Future<?>> futures = new ArrayList<>(operationCount);
-        long intervalNanos = Math.max(1L, TimeUnit.SECONDS.toNanos(1) / operationsPerSecond);
+        long intervalNanos = Math.max(MIN_INTERVAL_NANOS, TimeUnit.SECONDS.toNanos(1) / operationsPerSecond);
         long startTimeNanos = System.nanoTime();
 
         for (int i = 0; i < operationCount; i++) {
@@ -410,12 +411,12 @@ class H2OpenLoopLatencyIntegrationTest {
 
     private SQLException extractSqlException(ExecutionException executionException) {
         Throwable cause = executionException.getCause();
-        if (cause instanceof RuntimeException && cause.getCause() != null) {
+        while (cause != null) {
+            if (cause instanceof SQLException) {
+                return (SQLException) cause;
+            }
             cause = cause.getCause();
         }
-        if (cause instanceof SQLException) {
-            return (SQLException) cause;
-        }
-        return new SQLException("Open-loop operation failed", cause);
+        return new SQLException("Open-loop operation failed", executionException.getCause());
     }
 }
