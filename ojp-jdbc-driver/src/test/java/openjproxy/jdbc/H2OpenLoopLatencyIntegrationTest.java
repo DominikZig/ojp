@@ -85,7 +85,7 @@ class H2OpenLoopLatencyIntegrationTest {
         } catch (ClassNotFoundException e) {
             throw new SQLException("JDBC driver class not found: " + driverClass, e);
         }
-        dataSource = createHikariDataSource(driverClass, url, user, password);
+        dataSource = createDataSource(driverClass, url, user, password);
 
         setupSchemaAndSeedRows(url, user, password);
 
@@ -116,7 +116,7 @@ class H2OpenLoopLatencyIntegrationTest {
         logLatencyReport(sqlLatencies, stepLatencies);
     }
 
-    private HikariDataSource createHikariDataSource(String driverClass, String url, String user, String password) {
+    private HikariDataSource createDataSource(String driverClass, String url, String user, String password) {
         HikariConfig config = new HikariConfig();
         config.setDriverClassName(driverClass);
         config.setJdbcUrl(url);
@@ -248,7 +248,7 @@ class H2OpenLoopLatencyIntegrationTest {
                 + stepLatencies.get(StepType.EXECUTE_QUERY).size()
                 + stepLatencies.get(StepType.EXECUTE_UPDATE).size()
                 + stepLatencies.get(StepType.CLOSE).size();
-        report.append("=== JDBC STEP COUNT (gRPC PARSE OPPORTUNITIES PROXY) ===\n");
+        report.append("=== JDBC STEP COUNT (PROXY FOR gRPC INTERACTION POINTS) ===\n");
         report.append(String.format("Total JDBC step count: %d%n", totalJdbcStepCount));
         report.append("Proxy formula: connect + executeQuery + executeUpdate + close call counts\n");
         report.append("Note: this is not a direct gRPC decoder metric; it approximates the number of JDBC-layer\n");
@@ -300,16 +300,20 @@ class H2OpenLoopLatencyIntegrationTest {
     private void withInstrumentedConnection(Map<StepType, List<Long>> stepLatencies,
                                             ConnectionOperation operation) throws SQLException {
         Connection connection = null;
+        boolean operationSucceeded = false;
         try {
             long connectStart = System.nanoTime();
             connection = dataSource.getConnection();
             stepLatencies.get(StepType.CONNECT).add(System.nanoTime() - connectStart);
             operation.run(connection);
+            operationSucceeded = true;
         } finally {
             if (connection != null) {
                 long closeStart = System.nanoTime();
                 connection.close();
-                stepLatencies.get(StepType.CLOSE).add(System.nanoTime() - closeStart);
+                if (operationSucceeded) {
+                    stepLatencies.get(StepType.CLOSE).add(System.nanoTime() - closeStart);
+                }
             }
         }
     }
