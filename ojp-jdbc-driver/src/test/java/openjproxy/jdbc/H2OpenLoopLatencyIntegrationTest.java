@@ -55,6 +55,8 @@ class H2OpenLoopLatencyIntegrationTest {
     private static final int SELECT_OPEN_LOOP_RATE_PER_SECOND = 250;
     private static final int WRITE_OPEN_LOOP_RATE_PER_SECOND = 250;
     private static final int OPEN_LOOP_WORKER_THREADS = 32;
+    private static final long EXECUTOR_SHUTDOWN_TIMEOUT_MINUTES = 1L;
+    private static final long MAX_WAIT_PARK_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 
     private static boolean isH2TestEnabled;
     private HikariDataSource dataSource;
@@ -343,6 +345,9 @@ class H2OpenLoopLatencyIntegrationTest {
     private void executeOpenLoopWorkload(int operationCount,
                                          int operationsPerSecond,
                                          IndexedSqlOperation operation) throws SQLException {
+        if (operationsPerSecond <= 0) {
+            throw new SQLException("operationsPerSecond must be greater than zero");
+        }
         ExecutorService executorService = Executors.newFixedThreadPool(OPEN_LOOP_WORKER_THREADS);
         List<Future<?>> futures = new ArrayList<>(operationCount);
         long intervalNanos = Math.max(1L, TimeUnit.SECONDS.toNanos(1) / operationsPerSecond);
@@ -373,12 +378,14 @@ class H2OpenLoopLatencyIntegrationTest {
                 SQLException sqlException = extractSqlException(e);
                 if (firstSqlException == null) {
                     firstSqlException = sqlException;
+                } else {
+                    firstSqlException.addSuppressed(sqlException);
                 }
             }
         }
 
         try {
-            if (!executorService.awaitTermination(1, TimeUnit.MINUTES)) {
+            if (!executorService.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
                 executorService.shutdownNow();
             }
         } catch (InterruptedException e) {
@@ -397,7 +404,7 @@ class H2OpenLoopLatencyIntegrationTest {
             if (remainingNanos <= 0L) {
                 return;
             }
-            LockSupport.parkNanos(Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(10)));
+            LockSupport.parkNanos(Math.min(remainingNanos, MAX_WAIT_PARK_NANOS));
         }
     }
 
