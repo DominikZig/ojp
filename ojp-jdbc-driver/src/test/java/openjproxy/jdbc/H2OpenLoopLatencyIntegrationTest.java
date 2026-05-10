@@ -80,8 +80,8 @@ class H2OpenLoopLatencyIntegrationTest {
 
         setupSchemaAndSeedRows(url, user, password);
 
-        Map<SqlType, List<Long>> sqlLatencies = initializeLatencyMap(SqlType.values());
-        Map<StepType, List<Long>> stepLatencies = initializeLatencyMap(StepType.values());
+        Map<SqlType, List<Long>> sqlLatencies = initializeLatencyMap(SqlType.class);
+        Map<StepType, List<Long>> stepLatencies = initializeLatencyMap(StepType.class);
 
         List<Integer> activeIds = new ArrayList<>(INITIAL_ROWS);
         for (int i = 1; i <= INITIAL_ROWS; i++) {
@@ -257,9 +257,9 @@ class H2OpenLoopLatencyIntegrationTest {
         return medianNanos / 1_000_000.0;
     }
 
-    private <E extends Enum<E>> Map<E, List<Long>> initializeLatencyMap(E[] values) {
-        Map<E, List<Long>> map = new EnumMap<>(values[0].getDeclaringClass());
-        for (E value : values) {
+    private <E extends Enum<E>> Map<E, List<Long>> initializeLatencyMap(Class<E> enumClass) {
+        Map<E, List<Long>> map = new EnumMap<>(enumClass);
+        for (E value : enumClass.getEnumConstants()) {
             map.put(value, new ArrayList<>());
         }
         return map;
