@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for XA slot management via SlowQuerySegregationManager.
+ * Unit tests for XA slot management via AdmissionControlManager.
  * Tests the replacement of XaTransactionLimiter with SlotManager-based approach.
  */
 class XaSlotManagementTest {
@@ -20,7 +20,7 @@ class XaSlotManagementTest {
     void testXaSlotManagementWithSlowQueryDisabled() throws Exception {
         // Simulate XA with slow query segregation disabled
         // totalSlots=5, slowSlotPercentage=0 (all fast), fastSlotTimeout=1000ms
-        SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+        AdmissionControlManager manager = new AdmissionControlManager(
                 5,      // totalSlots
                 0,      // slowSlotPercentage (0 = all slots are fast)
                 0,      // idleTimeout (not relevant)
@@ -51,7 +51,7 @@ class XaSlotManagementTest {
     void testXaSlotManagementWithSlowQueryEnabled() throws Exception {
         // Simulate XA with slow query segregation enabled
         // totalSlots=10, slowSlotPercentage=30, so 3 slow + 7 fast
-        SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+        AdmissionControlManager manager = new AdmissionControlManager(
                 10,     // totalSlots
                 30,     // slowSlotPercentage
                 5000,   // idleTimeout
@@ -80,7 +80,7 @@ class XaSlotManagementTest {
     @Test
     void testConcurrentXaOperations() throws InterruptedException {
         int maxSlots = 5;
-        SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+        AdmissionControlManager manager = new AdmissionControlManager(
                 maxSlots,
                 0,      // All fast slots
                 0,
@@ -154,7 +154,7 @@ class XaSlotManagementTest {
     @Test
     void testSlotTimeout() {
         // Create manager with short timeout
-        SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+        AdmissionControlManager manager = new AdmissionControlManager(
                 2,      // Only 2 slots
                 0,      // All fast
                 0,
@@ -218,7 +218,7 @@ class XaSlotManagementTest {
     @Test
     void testSlotManagerDisabledMode() throws Exception {
         // When disabled, all operations should succeed immediately without slot management
-        SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+        AdmissionControlManager manager = new AdmissionControlManager(
                 1, 0, 0, 0, 0, 0, false  // disabled
         );
 

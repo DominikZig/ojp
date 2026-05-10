@@ -11,16 +11,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for SlowQuerySegregationManager functionality.
+ * Tests for AdmissionControlManager functionality.
  */
-class SlowQuerySegregationManagerTest {
+class AdmissionControlManagerTest {
 
-    private SlowQuerySegregationManager segregationManager;
+    private AdmissionControlManager segregationManager;
 
     @BeforeEach
     void setUp() {
         // 10 total slots, 20% slow (2 slots), 100ms idle timeout, 5000ms slow timeout, 1000ms fast timeout, enabled
-        segregationManager = new SlowQuerySegregationManager(10, 20, 100, 5000, 1000, true);
+        segregationManager = new AdmissionControlManager(10, 20, 100, 5000, 1000, true);
     }
 
     @Test
@@ -33,7 +33,7 @@ class SlowQuerySegregationManagerTest {
 
     @Test
     void testDisabledManager() {
-        SlowQuerySegregationManager disabledManager = new SlowQuerySegregationManager(10, 20, 100, 5000, 1000, false);
+        AdmissionControlManager disabledManager = new AdmissionControlManager(10, 20, 100, 5000, 1000, false);
 
         assertFalse(disabledManager.isEnabled());
         assertFalse(disabledManager.isAdmissionControlOnly());
@@ -43,7 +43,7 @@ class SlowQuerySegregationManagerTest {
 
     @Test
     void testAdmissionControlOnlyMode() throws Exception {
-        SlowQuerySegregationManager admissionManager = new SlowQuerySegregationManager(5, 0, 0, 0, 1000, 0, true);
+        AdmissionControlManager admissionManager = new AdmissionControlManager(5, 0, 0, 0, 1000, 0, true);
 
         assertTrue(admissionManager.isEnabled());
         assertTrue(admissionManager.isAdmissionControlOnly());
@@ -79,7 +79,7 @@ class SlowQuerySegregationManagerTest {
 
     @Test
     void testExecuteWithSegregationDisabled() throws Exception {
-        SlowQuerySegregationManager disabledManager = new SlowQuerySegregationManager(10, 20, 100, 5000, 1000, false);
+        AdmissionControlManager disabledManager = new AdmissionControlManager(10, 20, 100, 5000, 1000, false);
         String operationHash = "test-operation";
         String expectedResult = "operation-result";
 
@@ -202,7 +202,7 @@ class SlowQuerySegregationManagerTest {
     void testStatusString() {
         String status = segregationManager.getStatus();
         assertNotNull(status);
-        assertTrue(status.contains("SlowQuerySegregationManager"));
+        assertTrue(status.contains("AdmissionControlManager"));
         assertTrue(status.contains("enabled=true"));
         assertTrue(status.contains("trackedOps="));
         assertTrue(status.contains("totalExecs="));

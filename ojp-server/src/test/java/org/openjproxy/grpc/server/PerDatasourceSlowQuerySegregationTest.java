@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 
 /**
- * Test to verify that each datasource gets its own SlowQuerySegregationManager
+ * Test to verify that each datasource gets its own AdmissionControlManager
  * with pool sizes based on actual HikariCP configuration.
  */
 class PerDatasourceSlowQuerySegregationTest {
@@ -48,7 +48,7 @@ class PerDatasourceSlowQuerySegregationTest {
     }
 
     @Test
-    void testPerDatasourceSlowQuerySegregationManagerCreation() throws Exception {
+    void testPerDatasourceAdmissionControlManagerCreation() throws Exception {
         // Create properties for first connection
         Properties clientProperties1 = new Properties();
         clientProperties1.setProperty("ojp.connection.pool.maximumPoolSize", "10");
@@ -99,7 +99,7 @@ class PerDatasourceSlowQuerySegregationTest {
         actionContextField.setAccessible(true);
         ActionContext actionContext = (ActionContext) actionContextField.get(statementService);
 
-        Map<String, SlowQuerySegregationManager> managers = actionContext.getSlowQuerySegregationManagers();
+        Map<String, AdmissionControlManager> managers = actionContext.getSlowQuerySegregationManagers();
 
         // Verify that we have two separate managers
         assertEquals(2, managers.size(), "Should have created separate managers for each datasource");
@@ -108,8 +108,8 @@ class PerDatasourceSlowQuerySegregationTest {
         String connHash1 = ConnectionHashGenerator.hashConnectionDetails(connectionDetails1);
         String connHash2 = ConnectionHashGenerator.hashConnectionDetails(connectionDetails2);
 
-        SlowQuerySegregationManager manager1 = managers.get(connHash1);
-        SlowQuerySegregationManager manager2 = managers.get(connHash2);
+        AdmissionControlManager manager1 = managers.get(connHash1);
+        AdmissionControlManager manager2 = managers.get(connHash2);
 
         assertNotNull(manager1, "Manager for first datasource should exist");
         assertNotNull(manager2, "Manager for second datasource should exist");
@@ -172,11 +172,11 @@ class PerDatasourceSlowQuerySegregationTest {
         ActionContext actionContext = (ActionContext) actionContextField.get(statementService);
 
         java.lang.reflect.Method getManagerMethod = CommandExecutionHelper.class
-                .getDeclaredMethod("getSlowQuerySegregationManagerForConnection", ActionContext.class, String.class);
+                .getDeclaredMethod("getAdmissionControlManagerForConnection", ActionContext.class, String.class);
         getManagerMethod.setAccessible(true);
 
-        SlowQuerySegregationManager manager =
-                (SlowQuerySegregationManager) getManagerMethod.invoke(null, actionContext, connHash);
+        AdmissionControlManager manager =
+                (AdmissionControlManager) getManagerMethod.invoke(null, actionContext, connHash);
 
         assertNotNull(manager, "Should return existing manager for connection hash");
         assertTrue(manager.isEnabled(), "Manager should be enabled");
@@ -192,11 +192,11 @@ class PerDatasourceSlowQuerySegregationTest {
 
         // Use reflection to call the private static method with non-existent connection hash
         java.lang.reflect.Method getManagerMethod = CommandExecutionHelper.class
-                .getDeclaredMethod("getSlowQuerySegregationManagerForConnection", ActionContext.class, String.class);
+                .getDeclaredMethod("getAdmissionControlManagerForConnection", ActionContext.class, String.class);
         getManagerMethod.setAccessible(true);
         
-        SlowQuerySegregationManager manager =
-                (SlowQuerySegregationManager) getManagerMethod.invoke(null, actionContext, "non-existent-hash");
+        AdmissionControlManager manager =
+                (AdmissionControlManager) getManagerMethod.invoke(null, actionContext, "non-existent-hash");
 
         assertNotNull(manager, "Should return fallback manager for non-existent connection hash");
         assertFalse(manager.isEnabled(), "Fallback manager should be disabled");

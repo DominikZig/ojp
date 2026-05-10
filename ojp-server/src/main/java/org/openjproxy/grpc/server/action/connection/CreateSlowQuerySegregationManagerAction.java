@@ -1,7 +1,7 @@
 package org.openjproxy.grpc.server.action.connection;
 
 import lombok.extern.slf4j.Slf4j;
-import org.openjproxy.grpc.server.SlowQuerySegregationManager;
+import org.openjproxy.grpc.server.AdmissionControlManager;
 import org.openjproxy.grpc.server.action.ActionContext;
 
 /**
@@ -54,7 +54,7 @@ public class CreateSlowQuerySegregationManagerAction {
             // XA-specific handling
             if (slowQueryEnabled) {
                 // XA with slow query segregation enabled: use configured slow/fast slot allocation
-                SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+                AdmissionControlManager manager = new AdmissionControlManager(
                     actualPoolSize,
                     context.getServerConfiguration().getSlowQuerySlotPercentage(),
                     context.getServerConfiguration().getSlowQueryIdleTimeout(),
@@ -64,13 +64,13 @@ public class CreateSlowQuerySegregationManagerAction {
                     true
                 );
                 context.getSlowQuerySegregationManagers().put(connHash, manager);
-                log.info("Created SlowQuerySegregationManager for XA datasource {} with pool size {} (slow query segregation enabled)",
+                log.info("Created AdmissionControlManager for XA datasource {} with pool size {} (slow query segregation enabled)",
                         connHash, actualPoolSize);
             } else {
                 // XA with slow query segregation disabled: use SlotManager only (no QueryPerformanceMonitor)
                 // Set totalSlots=actualPoolSize, fastSlots=actualPoolSize, slowSlots=0
                 // Use xaStartTimeoutMillis as the fast slot timeout
-                SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+                AdmissionControlManager manager = new AdmissionControlManager(
                     actualPoolSize,
                     0, // slowSlotPercentage = 0 means all slots are fast
                     0, // idleTimeout not relevant
@@ -80,13 +80,13 @@ public class CreateSlowQuerySegregationManagerAction {
                     true // enabled = true to use SlotManager
                 );
                 context.getSlowQuerySegregationManagers().put(connHash, manager);
-                log.info("Created SlowQuerySegregationManager for XA datasource {} with {} slots (all fast, timeout={}ms, no performance monitoring)",
+                log.info("Created AdmissionControlManager for XA datasource {} with {} slots (all fast, timeout={}ms, no performance monitoring)",
                         connHash, actualPoolSize, fastSlotTimeoutMillis);
             }
         } else {
             // Non-XA handling
             if (slowQueryEnabled) {
-                SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+                AdmissionControlManager manager = new AdmissionControlManager(
                     actualPoolSize,
                     context.getServerConfiguration().getSlowQuerySlotPercentage(),
                     context.getServerConfiguration().getSlowQueryIdleTimeout(),
@@ -96,11 +96,11 @@ public class CreateSlowQuerySegregationManagerAction {
                     true
                 );
                 context.getSlowQuerySegregationManagers().put(connHash, manager);
-                log.info("Created SlowQuerySegregationManager for datasource {} with pool size {}",
+                log.info("Created AdmissionControlManager for datasource {} with pool size {}",
                         connHash, actualPoolSize);
             } else {
                 // Create admission-control-only manager (always-on semaphore)
-                SlowQuerySegregationManager manager = new SlowQuerySegregationManager(
+                AdmissionControlManager manager = new AdmissionControlManager(
                     actualPoolSize,
                     0, // 0% slow slots => all slots used for admission control
                     0,
@@ -110,7 +110,7 @@ public class CreateSlowQuerySegregationManagerAction {
                     true
                 );
                 context.getSlowQuerySegregationManagers().put(connHash, manager);
-                log.info("Created admission-control-only SlowQuerySegregationManager for datasource {} with pool size {} and timeout {}ms",
+                log.info("Created admission-control-only AdmissionControlManager for datasource {} with pool size {} and timeout {}ms",
                         connHash, actualPoolSize, fastSlotTimeoutMillis);
             }
         }

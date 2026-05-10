@@ -81,7 +81,7 @@ public class StatementServiceImpl extends StatementServiceGrpc.StatementServiceI
         Map<String, DataSource> datasourceMap = new ConcurrentHashMap<>();
         Map<String, DbName> dbNameMap = new ConcurrentHashMap<>();
         // Per-datasource slow query segregation managers
-        Map<String, SlowQuerySegregationManager> slowQuerySegregationManagers = new ConcurrentHashMap<>();
+        Map<String, AdmissionControlManager> slowQuerySegregationManagers = new ConcurrentHashMap<>();
         // Per-datasource cache configurations (shared with SessionManager)
         Map<String, org.openjproxy.grpc.server.cache.CacheConfiguration> cacheCfgMap =
                 cacheConfigurationMap != null ? cacheConfigurationMap : new ConcurrentHashMap<>();

@@ -34,7 +34,7 @@ This keeps one gate in the request path and avoids introducing a second, stacked
 
 ### 2) Admission-control-only execution mode
 
-`SlowQuerySegregationManager` now supports an internal mode where:
+`AdmissionControlManager` now supports an internal mode where:
 
 - gating is enabled,
 - operations acquire/release a uniform fast-slot permit,
@@ -74,7 +74,7 @@ This provided the practical signal that admission control was the key differenti
   - updated 0% slow-slot expectation to all-fast (`0 slow / total fast`).
 - `XaSlotManagementTest`
   - updated expectations for 0% mode and verified admission-control-only mode.
-- `SlowQuerySegregationManagerTest`
+- `AdmissionControlManagerTest`
   - added coverage for admission-control-only behavior and status reporting.
 
 ## Operational Notes
