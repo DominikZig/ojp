@@ -126,7 +126,10 @@ class H2OpenLoopLatencyIntegrationTest {
             runWriteQueries(loopMode, sqlLatencies, stepLatencies, activeIds);
             long fullTestDurationNanos = System.nanoTime() - fullTestStartNanos;
             long plannedPacingDurationNanos = estimatePlannedPacingDurationNanos(loopMode);
-            long effectiveFullTestDurationNanos = Math.max(0L, fullTestDurationNanos - plannedPacingDurationNanos);
+            long effectiveFullTestDurationNanos = fullTestDurationNanos - plannedPacingDurationNanos;
+            assertTrue(effectiveFullTestDurationNanos >= 0L,
+                    "Effective duration must be non-negative. fullTestDurationNanos=" + fullTestDurationNanos
+                            + ", plannedPacingDurationNanos=" + plannedPacingDurationNanos + ", loopMode=" + loopMode);
             int totalOperations = SELECT_QUERY_COUNT + WRITE_OPERATION_COUNT;
 
             assertExpectedCounts(sqlLatencies, stepLatencies);
@@ -345,17 +348,21 @@ class H2OpenLoopLatencyIntegrationTest {
         report.append("=== FULL TEST DURATION COMPARISON ===\n");
         appendDurationComparisonLine(report, "full-test-wall-clock-total-time",
                 openLoopResult.getFullTestDurationNanos(), closedLoopResult.getFullTestDurationNanos());
-        appendDurationComparisonLine(report, "full-test-effective-total-time (wall-clock - planned pacing)",
-                openLoopResult.getEffectiveFullTestDurationNanos(),
-                closedLoopResult.getEffectiveFullTestDurationNanos());
-        appendDurationPerOperationComparisonLine(report, "full-test-effective-average-per-operation",
-                openLoopResult.getEffectiveFullTestDurationNanos(), openLoopResult.getTotalOperations(),
-                closedLoopResult.getEffectiveFullTestDurationNanos(), closedLoopResult.getTotalOperations());
+        report.append(String.format("open-loop effective-total-time (wall-clock - planned pacing estimate): %.3f ms%n",
+                nanosToMillis(openLoopResult.getEffectiveFullTestDurationNanos())));
+        report.append(String.format("open-loop effective-average-per-operation: %.3f ms%n",
+                calculateAverageMsPerOperation(openLoopResult.getEffectiveFullTestDurationNanos(),
+                        openLoopResult.getTotalOperations())));
+        report.append(String.format("closed-loop total-time (no planned pacing subtraction): %.3f ms%n",
+                nanosToMillis(closedLoopResult.getFullTestDurationNanos())));
+        report.append(String.format("closed-loop average-per-operation: %.3f ms%n",
+                calculateAverageMsPerOperation(closedLoopResult.getFullTestDurationNanos(),
+                        closedLoopResult.getTotalOperations())));
         report.append("Note: closed-loop medians can be misleading because each request waits for the prior\n");
         report.append("request to finish before sending the next one. Total time / total operations adds an\n");
         report.append("end-to-end per-operation view that includes this waiting behavior.\n");
         report.append("Open-loop wall-clock totals include intentional dispatch spacing, so effective totals\n");
-        report.append("subtract planned pacing time before cross-mode comparison.\n");
+        report.append("subtract a planned pacing estimate and are not directly equivalent to closed-loop totals.\n");
         log.info(report.toString());
     }
 
@@ -398,7 +405,11 @@ class H2OpenLoopLatencyIntegrationTest {
         if (operationCount <= 0) {
             return 0.0;
         }
-        return (durationNanos / 1_000_000.0) / operationCount;
+        return nanosToMillis(durationNanos) / operationCount;
+    }
+
+    private double nanosToMillis(long nanos) {
+        return nanos / 1_000_000.0;
     }
 
     private double calculateMedianMs(List<Long> values) {
@@ -587,8 +598,9 @@ class H2OpenLoopLatencyIntegrationTest {
         if (operationCount <= 1 || operationsPerSecond <= 0) {
             return 0L;
         }
+        // This is a theoretical dispatch window based on configured rate, not measured runtime timing.
         long intervalNanos = Math.max(MIN_INTERVAL_NANOS, TimeUnit.SECONDS.toNanos(1) / operationsPerSecond);
-        return (long) (operationCount - 1) * intervalNanos;
+        return (operationCount - 1L) * intervalNanos;
     }
 
     private void executeClosedLoopWorkload(int operationCount,
