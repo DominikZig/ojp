@@ -17,6 +17,7 @@ import org.openjproxy.grpc.server.action.ActionContext;
 import org.openjproxy.grpc.server.action.util.ProcessClusterHealthAction;
 import org.openjproxy.grpc.server.pool.ConnectionPoolConfigurer;
 import org.openjproxy.grpc.server.pool.DataSourceConfigurationManager;
+import org.openjproxy.grpc.server.pool.PreparedStatementCachePropertyTranslator;
 import org.openjproxy.grpc.server.utils.ConnectionHashGenerator;
 import org.openjproxy.grpc.server.utils.UrlParser;
 
@@ -200,9 +201,14 @@ public class ConnectAction implements Action<ConnectionDetails, SessionInfo> {
                                     connHash, configuredTransactionIsolation);
                         }
 
+                        String parsedUrl = UrlParser.parseUrl(connectionDetails.getUrl());
+                        Map<String, String> statementCacheProperties =
+                                PreparedStatementCachePropertyTranslator.buildNonXaProperties(
+                                        context.getServerConfiguration(), parsedUrl);
+
                         // Build PoolConfig with transaction isolation (configured or default)
                         PoolConfig poolConfig = PoolConfig.builder()
-                                .url(UrlParser.parseUrl(connectionDetails.getUrl()))
+                                .url(parsedUrl)
                                 .username(connectionDetails.getUser())
                                 .password(connectionDetails.getPassword())
                                 .maxPoolSize(maxPoolSize)
@@ -211,6 +217,7 @@ public class ConnectAction implements Action<ConnectionDetails, SessionInfo> {
                                 .idleTimeoutMs(dsConfig.getIdleTimeout())
                                 .maxLifetimeMs(dsConfig.getMaxLifetime())
                                 .defaultTransactionIsolation(defaultTransactionIsolation)
+                                .properties(statementCacheProperties)
                                 .metricsPrefix("OJP-Pool-" + dsConfig.getDataSourceName())
                                 .build();
 

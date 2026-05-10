@@ -46,6 +46,16 @@ public class ServerConfiguration {
     private static final String SQL_ENHANCER_CACHE_ENABLED_KEY = "ojp.sql.enhancer.cacheEnabled";
     private static final String SQL_ENHANCER_CACHE_SIZE_KEY = "ojp.sql.enhancer.cacheSize";
     private static final String SQL_ENHANCER_FAIL_ON_VALIDATION_ERROR_KEY = "ojp.sql.enhancer.failOnValidationError";
+    private static final String STATEMENT_CACHE_ENABLED_KEY = CommonConstants.STATEMENT_CACHE_ENABLED_PROPERTY;
+    private static final String STATEMENT_CACHE_MAX_SIZE_KEY = CommonConstants.STATEMENT_CACHE_MAX_SIZE_PROPERTY;
+    private static final String STATEMENT_CACHE_SQL_LIMIT_KEY = CommonConstants.STATEMENT_CACHE_SQL_LIMIT_PROPERTY;
+    private static final String STATEMENT_CACHE_SERVER_PREPARE_KEY = CommonConstants.STATEMENT_CACHE_SERVER_PREPARE_PROPERTY;
+    private static final String STATEMENT_CACHE_PREPARE_THRESHOLD_KEY = CommonConstants.STATEMENT_CACHE_PREPARE_THRESHOLD_PROPERTY;
+    private static final String XA_STATEMENT_CACHE_ENABLED_KEY = CommonConstants.XA_STATEMENT_CACHE_ENABLED_PROPERTY;
+    private static final String XA_STATEMENT_CACHE_MAX_SIZE_KEY = CommonConstants.XA_STATEMENT_CACHE_MAX_SIZE_PROPERTY;
+    private static final String XA_STATEMENT_CACHE_SQL_LIMIT_KEY = CommonConstants.XA_STATEMENT_CACHE_SQL_LIMIT_PROPERTY;
+    private static final String XA_STATEMENT_CACHE_SERVER_PREPARE_KEY = CommonConstants.XA_STATEMENT_CACHE_SERVER_PREPARE_PROPERTY;
+    private static final String XA_STATEMENT_CACHE_PREPARE_THRESHOLD_KEY = CommonConstants.XA_STATEMENT_CACHE_PREPARE_THRESHOLD_PROPERTY;
 
     // Schema loader configuration keys
     private static final String SCHEMA_REFRESH_ENABLED_KEY = "ojp.sql.enhancer.schema.refresh.enabled";
@@ -115,6 +125,11 @@ public class ServerConfiguration {
     public static final boolean DEFAULT_SQL_ENHANCER_CACHE_ENABLED = true;
     public static final int DEFAULT_SQL_ENHANCER_CACHE_SIZE = 1000;
     public static final boolean DEFAULT_SQL_ENHANCER_FAIL_ON_VALIDATION_ERROR = true;
+    public static final boolean DEFAULT_STATEMENT_CACHE_ENABLED = CommonConstants.DEFAULT_STATEMENT_CACHE_ENABLED;
+    public static final int DEFAULT_STATEMENT_CACHE_MAX_SIZE = CommonConstants.DEFAULT_STATEMENT_CACHE_MAX_SIZE;
+    public static final int DEFAULT_STATEMENT_CACHE_SQL_LIMIT = CommonConstants.DEFAULT_STATEMENT_CACHE_SQL_LIMIT;
+    public static final boolean DEFAULT_STATEMENT_CACHE_SERVER_PREPARE = CommonConstants.DEFAULT_STATEMENT_CACHE_SERVER_PREPARE;
+    public static final int DEFAULT_STATEMENT_CACHE_PREPARE_THRESHOLD = CommonConstants.DEFAULT_STATEMENT_CACHE_PREPARE_THRESHOLD;
 
     // Schema loader default values
     public static final boolean DEFAULT_SCHEMA_REFRESH_ENABLED = true;
@@ -182,6 +197,16 @@ public class ServerConfiguration {
     private final boolean sqlEnhancerCacheEnabled;
     private final int sqlEnhancerCacheSize;
     private final boolean sqlEnhancerFailOnValidationError;
+    private final boolean statementCacheEnabled;
+    private final int statementCacheMaxSize;
+    private final int statementCacheSqlLimit;
+    private final boolean statementCacheServerPrepare;
+    private final int statementCachePrepareThreshold;
+    private final boolean xaStatementCacheEnabled;
+    private final int xaStatementCacheMaxSize;
+    private final int xaStatementCacheSqlLimit;
+    private final boolean xaStatementCacheServerPrepare;
+    private final int xaStatementCachePrepareThreshold;
 
     // Schema loader configuration
     private final boolean schemaRefreshEnabled;
@@ -248,6 +273,18 @@ public class ServerConfiguration {
         this.sqlEnhancerCacheEnabled = getBooleanProperty(SQL_ENHANCER_CACHE_ENABLED_KEY, DEFAULT_SQL_ENHANCER_CACHE_ENABLED);
         this.sqlEnhancerCacheSize = getIntProperty(SQL_ENHANCER_CACHE_SIZE_KEY, DEFAULT_SQL_ENHANCER_CACHE_SIZE);
         this.sqlEnhancerFailOnValidationError = getBooleanProperty(SQL_ENHANCER_FAIL_ON_VALIDATION_ERROR_KEY, DEFAULT_SQL_ENHANCER_FAIL_ON_VALIDATION_ERROR);
+        this.statementCacheEnabled = getBooleanProperty(STATEMENT_CACHE_ENABLED_KEY, DEFAULT_STATEMENT_CACHE_ENABLED);
+        this.statementCacheMaxSize = getNonNegativeIntProperty(STATEMENT_CACHE_MAX_SIZE_KEY, DEFAULT_STATEMENT_CACHE_MAX_SIZE);
+        this.statementCacheSqlLimit = getNonNegativeIntProperty(STATEMENT_CACHE_SQL_LIMIT_KEY, DEFAULT_STATEMENT_CACHE_SQL_LIMIT);
+        this.statementCacheServerPrepare = getBooleanProperty(STATEMENT_CACHE_SERVER_PREPARE_KEY, DEFAULT_STATEMENT_CACHE_SERVER_PREPARE);
+        this.statementCachePrepareThreshold = getNonNegativeIntProperty(STATEMENT_CACHE_PREPARE_THRESHOLD_KEY,
+                DEFAULT_STATEMENT_CACHE_PREPARE_THRESHOLD);
+        this.xaStatementCacheEnabled = getBooleanProperty(XA_STATEMENT_CACHE_ENABLED_KEY, DEFAULT_STATEMENT_CACHE_ENABLED);
+        this.xaStatementCacheMaxSize = getNonNegativeIntProperty(XA_STATEMENT_CACHE_MAX_SIZE_KEY, DEFAULT_STATEMENT_CACHE_MAX_SIZE);
+        this.xaStatementCacheSqlLimit = getNonNegativeIntProperty(XA_STATEMENT_CACHE_SQL_LIMIT_KEY, DEFAULT_STATEMENT_CACHE_SQL_LIMIT);
+        this.xaStatementCacheServerPrepare = getBooleanProperty(XA_STATEMENT_CACHE_SERVER_PREPARE_KEY, DEFAULT_STATEMENT_CACHE_SERVER_PREPARE);
+        this.xaStatementCachePrepareThreshold = getNonNegativeIntProperty(XA_STATEMENT_CACHE_PREPARE_THRESHOLD_KEY,
+                DEFAULT_STATEMENT_CACHE_PREPARE_THRESHOLD);
 
         // Schema loader configuration
         this.schemaRefreshEnabled = getBooleanProperty(SCHEMA_REFRESH_ENABLED_KEY, DEFAULT_SCHEMA_REFRESH_ENABLED);
@@ -319,6 +356,15 @@ public class ServerConfiguration {
             logger.warn("Invalid integer value for property '{}': {}, using default: {}", key, value, defaultValue);
             return defaultValue;
         }
+    }
+
+    private int getNonNegativeIntProperty(String key, int defaultValue) {
+        int value = getIntProperty(key, defaultValue);
+        if (value < 0) {
+            logger.warn("Invalid negative value for property '{}': {}, using default: {}", key, value, defaultValue);
+            return defaultValue;
+        }
+        return value;
     }
 
     /**
@@ -408,6 +454,13 @@ public class ServerConfiguration {
         logger.info("  SQL Enhancer Cache Enabled: {}", sqlEnhancerCacheEnabled);
         logger.info("  SQL Enhancer Cache Size: {}", sqlEnhancerCacheSize);
         logger.info("  SQL Enhancer Fail On Validation Error: {}", sqlEnhancerFailOnValidationError);
+        logger.info("Statement Cache Configuration:");
+        logger.info("  Statement Cache (non-XA): enabled={}, maxSize={}, sqlLimit={}, serverPrepare={}, prepareThreshold={}",
+                statementCacheEnabled, statementCacheMaxSize, statementCacheSqlLimit,
+                statementCacheServerPrepare, statementCachePrepareThreshold);
+        logger.info("  Statement Cache (XA): enabled={}, maxSize={}, sqlLimit={}, serverPrepare={}, prepareThreshold={}",
+                xaStatementCacheEnabled, xaStatementCacheMaxSize, xaStatementCacheSqlLimit,
+                xaStatementCacheServerPrepare, xaStatementCachePrepareThreshold);
         logger.info("Session Cleanup Configuration:");
         logger.info("  Session Cleanup Enabled: {}", sessionCleanupEnabled);
         logger.info("  Session Timeout: {} minutes", sessionTimeoutMinutes);
@@ -569,6 +622,46 @@ public class ServerConfiguration {
 
     public boolean isSqlEnhancerFailOnValidationError() {
         return sqlEnhancerFailOnValidationError;
+    }
+
+    public boolean isStatementCacheEnabled() {
+        return statementCacheEnabled;
+    }
+
+    public int getStatementCacheMaxSize() {
+        return statementCacheMaxSize;
+    }
+
+    public int getStatementCacheSqlLimit() {
+        return statementCacheSqlLimit;
+    }
+
+    public boolean isStatementCacheServerPrepare() {
+        return statementCacheServerPrepare;
+    }
+
+    public int getStatementCachePrepareThreshold() {
+        return statementCachePrepareThreshold;
+    }
+
+    public boolean isXaStatementCacheEnabled() {
+        return xaStatementCacheEnabled;
+    }
+
+    public int getXaStatementCacheMaxSize() {
+        return xaStatementCacheMaxSize;
+    }
+
+    public int getXaStatementCacheSqlLimit() {
+        return xaStatementCacheSqlLimit;
+    }
+
+    public boolean isXaStatementCacheServerPrepare() {
+        return xaStatementCacheServerPrepare;
+    }
+
+    public int getXaStatementCachePrepareThreshold() {
+        return xaStatementCachePrepareThreshold;
     }
 
     public boolean isSchemaRefreshEnabled() {

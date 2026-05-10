@@ -54,6 +54,20 @@ public class CommonConstants {
     public static final String DEFAULT_TRANSACTION_ISOLATION_PROPERTY = "ojp.connection.pool.defaultTransactionIsolation";
     public static final String XA_DEFAULT_TRANSACTION_ISOLATION_PROPERTY = "ojp.xa.connection.pool.defaultTransactionIsolation";
 
+    // Prepared statement cache configuration property keys (global server-side)
+    public static final String STATEMENT_CACHE_ENABLED_PROPERTY = "ojp.connection.pool.statementCache.enabled";
+    public static final String STATEMENT_CACHE_MAX_SIZE_PROPERTY = "ojp.connection.pool.statementCache.maxSize";
+    public static final String STATEMENT_CACHE_SQL_LIMIT_PROPERTY = "ojp.connection.pool.statementCache.sqlLimit";
+    public static final String STATEMENT_CACHE_SERVER_PREPARE_PROPERTY = "ojp.connection.pool.statementCache.serverPrepare";
+    public static final String STATEMENT_CACHE_PREPARE_THRESHOLD_PROPERTY = "ojp.connection.pool.statementCache.prepareThreshold";
+
+    // XA prepared statement cache configuration property keys (global server-side)
+    public static final String XA_STATEMENT_CACHE_ENABLED_PROPERTY = "ojp.xa.connection.pool.statementCache.enabled";
+    public static final String XA_STATEMENT_CACHE_MAX_SIZE_PROPERTY = "ojp.xa.connection.pool.statementCache.maxSize";
+    public static final String XA_STATEMENT_CACHE_SQL_LIMIT_PROPERTY = "ojp.xa.connection.pool.statementCache.sqlLimit";
+    public static final String XA_STATEMENT_CACHE_SERVER_PREPARE_PROPERTY = "ojp.xa.connection.pool.statementCache.serverPrepare";
+    public static final String XA_STATEMENT_CACHE_PREPARE_THRESHOLD_PROPERTY = "ojp.xa.connection.pool.statementCache.prepareThreshold";
+
     // HikariCP default connection pool settings - optimized for high concurrency
     // ISSUE #29 FIX: Updated these values to prevent indefinite blocking under high load
     public static final int DEFAULT_MAXIMUM_POOL_SIZE = 20;  // Increased from 10 to handle more concurrent requests
@@ -61,6 +75,13 @@ public class CommonConstants {
     public static final long DEFAULT_IDLE_TIMEOUT = 600000;  // 10 minutes
     public static final long DEFAULT_MAX_LIFETIME = 1800000; // 30 minutes
     public static final long DEFAULT_CONNECTION_TIMEOUT = 10000; // Reduced from 30s to 10s for faster failure
+
+    // Prepared statement cache defaults (global server-side)
+    public static final boolean DEFAULT_STATEMENT_CACHE_ENABLED = true;
+    public static final int DEFAULT_STATEMENT_CACHE_MAX_SIZE = 250;
+    public static final int DEFAULT_STATEMENT_CACHE_SQL_LIMIT = 2048;
+    public static final boolean DEFAULT_STATEMENT_CACHE_SERVER_PREPARE = true;
+    public static final int DEFAULT_STATEMENT_CACHE_PREPARE_THRESHOLD = 5;
 
     // XA pool defaults - matching non-XA connection pool defaults for consistency
     public static final int DEFAULT_XA_MAXIMUM_POOL_SIZE = 20;  // Same as non-XA for consistency

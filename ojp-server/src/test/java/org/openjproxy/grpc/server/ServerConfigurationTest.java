@@ -30,6 +30,7 @@ class ServerConfigurationTest {
         System.clearProperty("ojp.prometheus.allowedIps");
         System.clearProperty("ojp.server.circuitBreakerTimeout");
         System.clearProperty("ojp.libs.path");
+        TestPropertyCleanupUtils.clearStatementCacheProperties();
     }
 
     @Test
@@ -50,6 +51,16 @@ class ServerConfigurationTest {
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_TIMEOUT, config.getCircuitBreakerTimeout());
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_THRESHOLD, config.getCircuitBreakerThreshold());
         assertEquals(ServerConfiguration.DEFAULT_DRIVERS_PATH, config.getDriversPath());
+        assertTrue(config.isStatementCacheEnabled());
+        assertEquals(250, config.getStatementCacheMaxSize());
+        assertEquals(2048, config.getStatementCacheSqlLimit());
+        assertTrue(config.isStatementCacheServerPrepare());
+        assertEquals(5, config.getStatementCachePrepareThreshold());
+        assertTrue(config.isXaStatementCacheEnabled());
+        assertEquals(250, config.getXaStatementCacheMaxSize());
+        assertEquals(2048, config.getXaStatementCacheSqlLimit());
+        assertTrue(config.isXaStatementCacheServerPrepare());
+        assertEquals(5, config.getXaStatementCachePrepareThreshold());
     }
 
     @Test
@@ -90,6 +101,9 @@ class ServerConfigurationTest {
         System.setProperty("ojp.prometheus.port", "not-a-number");
         System.setProperty("ojp.server.threadPoolSize", "abc");
         System.setProperty("ojp.server.circuitBreakerThreshold", "xyz");
+        System.setProperty("ojp.connection.pool.statementCache.maxSize", "-1");
+        System.setProperty("ojp.connection.pool.statementCache.sqlLimit", "invalid");
+        System.setProperty("ojp.connection.pool.statementCache.prepareThreshold", "-2");
 
         ServerConfiguration config = new ServerConfiguration();
 
@@ -98,6 +112,9 @@ class ServerConfigurationTest {
         assertEquals(ServerConfiguration.DEFAULT_PROMETHEUS_PORT, config.getPrometheusPort());
         assertEquals(ServerConfiguration.DEFAULT_THREAD_POOL_SIZE, config.getThreadPoolSize());
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_THRESHOLD, config.getCircuitBreakerThreshold());
+        assertEquals(ServerConfiguration.DEFAULT_STATEMENT_CACHE_MAX_SIZE, config.getStatementCacheMaxSize());
+        assertEquals(ServerConfiguration.DEFAULT_STATEMENT_CACHE_SQL_LIMIT, config.getStatementCacheSqlLimit());
+        assertEquals(ServerConfiguration.DEFAULT_STATEMENT_CACHE_PREPARE_THRESHOLD, config.getStatementCachePrepareThreshold());
     }
 
     @Test
