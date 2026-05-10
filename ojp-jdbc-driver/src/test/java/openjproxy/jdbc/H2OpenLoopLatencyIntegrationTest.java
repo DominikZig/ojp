@@ -30,6 +30,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>This test intentionally acquires and closes a pooled connection for each measured operation
  * to expose potential latency hotspots across connect/execute/close flow steps.
+ *
+ * <p>It also intentionally enables app-side HikariCP (100/100) as a diagnostics-only exception to
+ * the normal "no client-side pool with OJP" guidance, because this test specifically profiles
+ * checkout/checkin overhead at fixed concurrency.
  */
 @Slf4j
 class H2OpenLoopLatencyIntegrationTest {
@@ -244,8 +248,8 @@ class H2OpenLoopLatencyIntegrationTest {
                 + stepLatencies.get(StepType.EXECUTE_QUERY).size()
                 + stepLatencies.get(StepType.EXECUTE_UPDATE).size()
                 + stepLatencies.get(StepType.CLOSE).size();
-        report.append("=== gRPC PARSING PROXY ESTIMATE ===\n");
-        report.append(String.format("JDBC step count (proxy for parse opportunities): %d%n", totalJdbcStepCount));
+        report.append("=== JDBC STEP COUNT (gRPC PARSE OPPORTUNITIES PROXY) ===\n");
+        report.append(String.format("Total JDBC step count: %d%n", totalJdbcStepCount));
         report.append("Proxy formula: connect + executeQuery + executeUpdate + close call counts\n");
         report.append("Note: this is not a direct gRPC decoder metric; it approximates the number of JDBC-layer\n");
         report.append("request/response touch points where parse work can happen, and serves as an upper-bound proxy.\n");
@@ -261,8 +265,8 @@ class H2OpenLoopLatencyIntegrationTest {
     private double calculateMedianMs(List<Long> values) {
         List<Long> sorted = new ArrayList<>(values);
         sorted.sort(Long::compareTo);
-        double medianNanos = PerformanceMetrics.calculatePercentile(sorted, 50);
-        return medianNanos / 1_000_000.0;
+        double medianNs = PerformanceMetrics.calculatePercentile(sorted, 50);
+        return medianNs / 1_000_000.0;
     }
 
     private <E extends Enum<E>> Map<E, List<Long>> initializeLatencyMap(Class<E> enumClass) {
