@@ -3,6 +3,7 @@ package org.openjproxy.grpc.server.pool;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.openjproxy.grpc.server.ServerConfiguration;
+import org.openjproxy.grpc.server.TestPropertyCleanupUtils;
 
 import java.util.Map;
 
@@ -13,16 +14,7 @@ class PreparedStatementCachePropertyTranslatorTest {
 
     @AfterEach
     void clearProperties() {
-        System.clearProperty("ojp.connection.pool.statementCache.enabled");
-        System.clearProperty("ojp.connection.pool.statementCache.maxSize");
-        System.clearProperty("ojp.connection.pool.statementCache.sqlLimit");
-        System.clearProperty("ojp.connection.pool.statementCache.serverPrepare");
-        System.clearProperty("ojp.connection.pool.statementCache.prepareThreshold");
-        System.clearProperty("ojp.xa.connection.pool.statementCache.enabled");
-        System.clearProperty("ojp.xa.connection.pool.statementCache.maxSize");
-        System.clearProperty("ojp.xa.connection.pool.statementCache.sqlLimit");
-        System.clearProperty("ojp.xa.connection.pool.statementCache.serverPrepare");
-        System.clearProperty("ojp.xa.connection.pool.statementCache.prepareThreshold");
+        TestPropertyCleanupUtils.clearStatementCacheProperties();
     }
 
     @Test

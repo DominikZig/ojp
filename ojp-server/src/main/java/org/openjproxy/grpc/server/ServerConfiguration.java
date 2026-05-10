@@ -454,6 +454,7 @@ public class ServerConfiguration {
         logger.info("  SQL Enhancer Cache Enabled: {}", sqlEnhancerCacheEnabled);
         logger.info("  SQL Enhancer Cache Size: {}", sqlEnhancerCacheSize);
         logger.info("  SQL Enhancer Fail On Validation Error: {}", sqlEnhancerFailOnValidationError);
+        logger.info("Statement Cache Configuration:");
         logger.info("  Statement Cache (non-XA): enabled={}, maxSize={}, sqlLimit={}, serverPrepare={}, prepareThreshold={}",
                 statementCacheEnabled, statementCacheMaxSize, statementCacheSqlLimit,
                 statementCacheServerPrepare, statementCachePrepareThreshold);

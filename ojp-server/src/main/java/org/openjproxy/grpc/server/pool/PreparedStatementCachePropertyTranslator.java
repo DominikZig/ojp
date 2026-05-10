@@ -92,7 +92,7 @@ public final class PreparedStatementCachePropertyTranslator {
             return properties;
         }
 
-        log.debug("Statement cache translation skipped for unsupported database URL: {}", jdbcUrl);
+        log.debug("Statement cache translation not needed for database URL: {}", jdbcUrl);
         return Map.of();
     }
 }
