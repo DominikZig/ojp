@@ -3,7 +3,6 @@ package openjproxy.jdbc;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import lombok.extern.slf4j.Slf4j;
-import openjproxy.jdbc.testutil.TestDBUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,6 +25,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+/**
+ * Open-loop latency integration test for H2 through OJP.
+ *
+ * <p>This test intentionally acquires and closes a pooled connection for each measured operation
+ * to expose potential latency hotspots across connect/execute/close flow steps.
+ */
 @Slf4j
 class H2OpenLoopLatencyIntegrationTest {
 
@@ -113,6 +118,7 @@ class H2OpenLoopLatencyIntegrationTest {
         config.setJdbcUrl(url);
         config.setUsername(user);
         config.setPassword(password);
+        // Reviewer-requested fixed-size pool to stress checkout/checkin behavior under a large pool.
         config.setMaximumPoolSize(HIKARI_POOL_SIZE);
         config.setMinimumIdle(HIKARI_POOL_SIZE);
         config.setPoolName("H2OpenLoopLatencyPool");
@@ -241,7 +247,8 @@ class H2OpenLoopLatencyIntegrationTest {
         report.append("=== gRPC PARSING PROXY ESTIMATE ===\n");
         report.append(String.format("JDBC step count (proxy for parse opportunities): %d%n", totalJdbcStepCount));
         report.append("Proxy formula: connect + executeQuery + executeUpdate + close call counts\n");
-        report.append("Note: this is not a direct gRPC decoder metric; it is a best-effort upper-bound proxy.\n");
+        report.append("Note: this is not a direct gRPC decoder metric; it approximates the number of JDBC-layer\n");
+        report.append("request/response touch points where parse work can happen, and serves as an upper-bound proxy.\n");
 
         log.info(report.toString());
     }
