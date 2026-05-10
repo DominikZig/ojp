@@ -1,12 +1,11 @@
 package openjproxy.jdbc;
 
+import lombok.extern.slf4j.Slf4j;
 import openjproxy.jdbc.testutil.TestDBUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvFileSource;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -15,7 +14,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -26,14 +24,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+@Slf4j
 class H2OpenLoopLatencyIntegrationTest {
-
-    private static final Logger logger = LoggerFactory.getLogger(H2OpenLoopLatencyIntegrationTest.class);
 
     private static final String TABLE_NAME = "h2_open_loop_latency_test";
     private static final int INITIAL_ROWS = 1000;
     private static final int SELECT_QUERY_COUNT = 1000;
     private static final int WRITE_OPERATION_COUNT = 1000;
+    private static final int WRITE_OPERATION_TYPE_COUNT = 3;
 
     private static boolean isH2TestEnabled;
     private Connection connection;
@@ -141,7 +139,7 @@ class H2OpenLoopLatencyIntegrationTest {
              PreparedStatement delete = connection.prepareStatement(
                      "DELETE FROM " + TABLE_NAME + " WHERE id = ?")) {
             for (int i = 0; i < WRITE_OPERATION_COUNT; i++) {
-                int operationType = i % 3;
+                int operationType = i % WRITE_OPERATION_TYPE_COUNT;
                 if (operationType == 0) {
                     int newId = nextInsertId++;
                     long latency = measureLatency(() -> {
@@ -189,7 +187,7 @@ class H2OpenLoopLatencyIntegrationTest {
         appendLatencyLine(report, "UPDATE", latenciesByType.get(SqlType.UPDATE));
         appendLatencyLine(report, "DELETE", latenciesByType.get(SqlType.DELETE));
 
-        logger.info(report.toString());
+        log.info(report.toString());
     }
 
     private void appendLatencyLine(StringBuilder report, String type, List<Long> values) {
@@ -199,7 +197,7 @@ class H2OpenLoopLatencyIntegrationTest {
 
     private double calculateMedianMs(List<Long> values) {
         List<Long> sorted = new ArrayList<>(values);
-        Collections.sort(sorted);
+        sorted.sort(Long::compareTo);
         double medianNs = PerformanceMetrics.calculatePercentile(sorted, 50);
         return medianNs / 1_000_000.0;
     }
