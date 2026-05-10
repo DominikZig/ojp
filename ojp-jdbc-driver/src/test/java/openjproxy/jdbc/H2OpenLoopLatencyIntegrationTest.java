@@ -121,12 +121,16 @@ class H2OpenLoopLatencyIntegrationTest {
                 activeIds.add(i);
             }
 
+            long fullTestStartNanos = System.nanoTime();
             runSelectQueries(loopMode, sqlLatencies, stepLatencies, activeIds);
             runWriteQueries(loopMode, sqlLatencies, stepLatencies, activeIds);
+            long fullTestDurationNanos = System.nanoTime() - fullTestStartNanos;
+            int totalOperations = SELECT_QUERY_COUNT + WRITE_OPERATION_COUNT;
 
             assertExpectedCounts(sqlLatencies, stepLatencies);
-            logLatencyReport(loopMode, sqlLatencies, stepLatencies);
-            loopResults.put(loopMode, new LoopRunResult(sqlLatencies, stepLatencies));
+            logLatencyReport(loopMode, sqlLatencies, stepLatencies, fullTestDurationNanos, totalOperations);
+            loopResults.put(loopMode, new LoopRunResult(sqlLatencies, stepLatencies,
+                    fullTestDurationNanos, totalOperations));
         }
 
         logModeComparison(loopResults);
@@ -248,9 +252,17 @@ class H2OpenLoopLatencyIntegrationTest {
 
     private void logLatencyReport(LoopMode loopMode,
                                   Map<SqlType, List<Long>> sqlLatencies,
-                                  Map<StepType, List<Long>> stepLatencies) {
+                                  Map<StepType, List<Long>> stepLatencies,
+                                  long fullTestDurationNanos,
+                                  int totalOperations) {
         StringBuilder report = new StringBuilder();
+        double fullTestDurationMs = fullTestDurationNanos / 1_000_000.0;
+        double fullTestAvgPerOperationMs = fullTestDurationMs / totalOperations;
         report.append(String.format("%n=== H2 LATENCY REPORT (%s) ===%n", loopMode));
+        report.append(String.format("Full test total time: %.3f ms%n", fullTestDurationMs));
+        report.append(String.format("Full test average time per operation (total/ops): %.3f ms%n",
+                fullTestAvgPerOperationMs));
+        report.append(String.format("Total operations: %d%n", totalOperations));
         report.append(String.format("SELECT operations: %d%n", sqlLatencies.get(SqlType.SELECT).size()));
         report.append(String.format("INSERT operations: %d%n", sqlLatencies.get(SqlType.INSERT).size()));
         report.append(String.format("UPDATE operations: %d%n", sqlLatencies.get(SqlType.UPDATE).size()));
@@ -316,6 +328,16 @@ class H2OpenLoopLatencyIntegrationTest {
         appendComparisonLine(report, "close",
                 calculateMedianMs(openLoopResult.getStepLatencies().get(StepType.CLOSE)),
                 calculateMedianMs(closedLoopResult.getStepLatencies().get(StepType.CLOSE)));
+        report.append('\n');
+        report.append("=== FULL TEST DURATION COMPARISON ===\n");
+        appendDurationComparisonLine(report, "full-test-total-time",
+                openLoopResult.getFullTestDurationNanos(), closedLoopResult.getFullTestDurationNanos());
+        appendDurationPerOperationComparisonLine(report, "full-test-average-per-operation",
+                openLoopResult.getFullTestDurationNanos(), openLoopResult.getTotalOperations(),
+                closedLoopResult.getFullTestDurationNanos(), closedLoopResult.getTotalOperations());
+        report.append("Note: closed-loop medians can be misleading because each request waits for the prior\n");
+        report.append("request to finish before sending the next one. Total time / total operations adds an\n");
+        report.append("end-to-end per-operation view that includes this waiting behavior.\n");
         log.info(report.toString());
     }
 
@@ -328,6 +350,37 @@ class H2OpenLoopLatencyIntegrationTest {
     private void appendLatencyLine(StringBuilder report, String type, List<Long> values) {
         double medianMs = calculateMedianMs(values);
         report.append(String.format("%s median latency: %.3f ms%n", type, medianMs));
+    }
+
+    private void appendDurationComparisonLine(StringBuilder report,
+                                              String metric,
+                                              long openLoopDurationNanos,
+                                              long closedLoopDurationNanos) {
+        double openLoopMs = openLoopDurationNanos / 1_000_000.0;
+        double closedLoopMs = closedLoopDurationNanos / 1_000_000.0;
+        double deltaMs = openLoopMs - closedLoopMs;
+        report.append(String.format("%s: open=%.3f, closed=%.3f, delta=%.3f ms%n",
+                metric, openLoopMs, closedLoopMs, deltaMs));
+    }
+
+    private void appendDurationPerOperationComparisonLine(StringBuilder report,
+                                                          String metric,
+                                                          long openLoopDurationNanos,
+                                                          int openLoopOperations,
+                                                          long closedLoopDurationNanos,
+                                                          int closedLoopOperations) {
+        double openLoopMs = calculateAverageMsPerOperation(openLoopDurationNanos, openLoopOperations);
+        double closedLoopMs = calculateAverageMsPerOperation(closedLoopDurationNanos, closedLoopOperations);
+        double deltaMs = openLoopMs - closedLoopMs;
+        report.append(String.format("%s: open=%.3f, closed=%.3f, delta=%.3f ms%n",
+                metric, openLoopMs, closedLoopMs, deltaMs));
+    }
+
+    private double calculateAverageMsPerOperation(long durationNanos, int operationCount) {
+        if (operationCount <= 0) {
+            return 0.0;
+        }
+        return (durationNanos / 1_000_000.0) / operationCount;
     }
 
     private double calculateMedianMs(List<Long> values) {
@@ -363,10 +416,17 @@ class H2OpenLoopLatencyIntegrationTest {
     private static final class LoopRunResult {
         private final Map<SqlType, List<Long>> sqlLatencies;
         private final Map<StepType, List<Long>> stepLatencies;
+        private final long fullTestDurationNanos;
+        private final int totalOperations;
 
-        LoopRunResult(Map<SqlType, List<Long>> sqlLatencies, Map<StepType, List<Long>> stepLatencies) {
+        LoopRunResult(Map<SqlType, List<Long>> sqlLatencies,
+                      Map<StepType, List<Long>> stepLatencies,
+                      long fullTestDurationNanos,
+                      int totalOperations) {
             this.sqlLatencies = copyLatencyMap(sqlLatencies);
             this.stepLatencies = copyLatencyMap(stepLatencies);
+            this.fullTestDurationNanos = fullTestDurationNanos;
+            this.totalOperations = totalOperations;
         }
 
         Map<SqlType, List<Long>> getSqlLatencies() {
@@ -375,6 +435,14 @@ class H2OpenLoopLatencyIntegrationTest {
 
         Map<StepType, List<Long>> getStepLatencies() {
             return Collections.unmodifiableMap(stepLatencies);
+        }
+
+        long getFullTestDurationNanos() {
+            return fullTestDurationNanos;
+        }
+
+        int getTotalOperations() {
+            return totalOperations;
         }
 
         private static <E extends Enum<E>> Map<E, List<Long>> copyLatencyMap(Map<E, List<Long>> source) {
