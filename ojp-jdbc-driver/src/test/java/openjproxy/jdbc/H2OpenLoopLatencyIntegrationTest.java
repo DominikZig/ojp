@@ -47,6 +47,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class H2OpenLoopLatencyIntegrationTest {
 
     private static final String TABLE_NAME = "h2_open_loop_latency_test";
+    private static final String LOOP_MODE_PROPERTY = "h2LatencyLoopMode";
     private static final int INITIAL_ROWS = 1000;
     private static final int SELECT_QUERY_COUNT = 1000;
     private static final int WRITE_OPERATION_COUNT = 1000;
@@ -76,6 +77,12 @@ class H2OpenLoopLatencyIntegrationTest {
         CLOSE
     }
 
+    private enum LoopMode {
+        OPEN_LOOP,
+        CLOSED_LOOP,
+        BOTH
+    }
+
     @BeforeAll
     static void setupClass() {
         isH2TestEnabled = Boolean.parseBoolean(System.getProperty("enableH2Tests", "false"));
@@ -101,32 +108,28 @@ class H2OpenLoopLatencyIntegrationTest {
         }
         dataSource = createDataSource(driverClass, url, user, password);
 
-        setupSchemaAndSeedRows(url, user, password);
+        Map<LoopMode, LoopRunResult> loopResults = new EnumMap<>(LoopMode.class);
+        List<LoopMode> executionModes = resolveExecutionModes();
+        for (LoopMode loopMode : executionModes) {
+            setupSchemaAndSeedRows(url, user, password);
 
-        Map<SqlType, List<Long>> sqlLatencies = initializeLatencyMap(SqlType.class);
-        Map<StepType, List<Long>> stepLatencies = initializeLatencyMap(StepType.class);
+            Map<SqlType, List<Long>> sqlLatencies = initializeLatencyMap(SqlType.class);
+            Map<StepType, List<Long>> stepLatencies = initializeLatencyMap(StepType.class);
 
-        List<Integer> activeIds = new ArrayList<>(INITIAL_ROWS);
-        for (int i = 1; i <= INITIAL_ROWS; i++) {
-            activeIds.add(i);
+            List<Integer> activeIds = new ArrayList<>(INITIAL_ROWS);
+            for (int i = 1; i <= INITIAL_ROWS; i++) {
+                activeIds.add(i);
+            }
+
+            runSelectQueries(loopMode, sqlLatencies, stepLatencies, activeIds);
+            runWriteQueries(loopMode, sqlLatencies, stepLatencies, activeIds);
+
+            assertExpectedCounts(sqlLatencies, stepLatencies);
+            logLatencyReport(loopMode, sqlLatencies, stepLatencies);
+            loopResults.put(loopMode, new LoopRunResult(loopMode, sqlLatencies, stepLatencies));
         }
 
-        runSelectQueries(sqlLatencies, stepLatencies, activeIds);
-        runWriteQueries(sqlLatencies, stepLatencies, activeIds);
-
-        assertEquals(SELECT_QUERY_COUNT, sqlLatencies.get(SqlType.SELECT).size());
-        assertEquals(WRITE_OPERATION_COUNT, sqlLatencies.get(SqlType.INSERT).size()
-                + sqlLatencies.get(SqlType.UPDATE).size()
-                + sqlLatencies.get(SqlType.DELETE).size());
-        assertFalse(sqlLatencies.get(SqlType.INSERT).isEmpty());
-        assertFalse(sqlLatencies.get(SqlType.UPDATE).isEmpty());
-        assertFalse(sqlLatencies.get(SqlType.DELETE).isEmpty());
-        assertEquals(SELECT_QUERY_COUNT + WRITE_OPERATION_COUNT, stepLatencies.get(StepType.CONNECT).size());
-        assertEquals(SELECT_QUERY_COUNT + WRITE_OPERATION_COUNT, stepLatencies.get(StepType.CLOSE).size());
-        assertEquals(SELECT_QUERY_COUNT, stepLatencies.get(StepType.EXECUTE_QUERY).size());
-        assertEquals(WRITE_OPERATION_COUNT, stepLatencies.get(StepType.EXECUTE_UPDATE).size());
-
-        logLatencyReport(sqlLatencies, stepLatencies);
+        logModeComparison(loopResults);
     }
 
     private HikariDataSource createDataSource(String driverClass, String url, String user, String password) {
@@ -159,10 +162,11 @@ class H2OpenLoopLatencyIntegrationTest {
         }
     }
 
-    private void runSelectQueries(Map<SqlType, List<Long>> sqlLatencies,
+    private void runSelectQueries(LoopMode loopMode,
+                                  Map<SqlType, List<Long>> sqlLatencies,
                                   Map<StepType, List<Long>> stepLatencies,
                                   List<Integer> activeIds) throws SQLException {
-        executeOpenLoopWorkload(SELECT_QUERY_COUNT, SELECT_OPEN_LOOP_RATE_PER_SECOND, operationIndex -> {
+        executeWorkload(loopMode, SELECT_QUERY_COUNT, SELECT_OPEN_LOOP_RATE_PER_SECOND, operationIndex -> {
             int id = activeIds.get(ThreadLocalRandom.current().nextInt(activeIds.size()));
             withInstrumentedConnection(stepLatencies, connection -> {
                 try (PreparedStatement select = connection.prepareStatement(
@@ -179,12 +183,13 @@ class H2OpenLoopLatencyIntegrationTest {
         });
     }
 
-    private void runWriteQueries(Map<SqlType, List<Long>> sqlLatencies,
+    private void runWriteQueries(LoopMode loopMode,
+                                 Map<SqlType, List<Long>> sqlLatencies,
                                  Map<StepType, List<Long>> stepLatencies,
                                  List<Integer> activeIds) throws SQLException {
         AtomicInteger nextInsertId = new AtomicInteger(INITIAL_ROWS + 1);
         Object activeIdsLock = new Object();
-        executeOpenLoopWorkload(WRITE_OPERATION_COUNT, WRITE_OPEN_LOOP_RATE_PER_SECOND, operationIndex -> {
+        executeWorkload(loopMode, WRITE_OPERATION_COUNT, WRITE_OPEN_LOOP_RATE_PER_SECOND, operationIndex -> {
             int operationType = operationIndex % WRITE_OPERATION_TYPE_COUNT;
             if (operationType == 0) {
                 int newId = nextInsertId.getAndIncrement();
@@ -241,10 +246,11 @@ class H2OpenLoopLatencyIntegrationTest {
         });
     }
 
-    private void logLatencyReport(Map<SqlType, List<Long>> sqlLatencies,
+    private void logLatencyReport(LoopMode loopMode,
+                                  Map<SqlType, List<Long>> sqlLatencies,
                                   Map<StepType, List<Long>> stepLatencies) {
         StringBuilder report = new StringBuilder();
-        report.append("\n=== H2 OPEN LOOP LATENCY REPORT ===\n");
+        report.append(String.format("%n=== H2 LATENCY REPORT (%s) ===%n", loopMode));
         report.append(String.format("SELECT operations: %d%n", sqlLatencies.get(SqlType.SELECT).size()));
         report.append(String.format("INSERT operations: %d%n", sqlLatencies.get(SqlType.INSERT).size()));
         report.append(String.format("UPDATE operations: %d%n", sqlLatencies.get(SqlType.UPDATE).size()));
@@ -275,6 +281,48 @@ class H2OpenLoopLatencyIntegrationTest {
         report.append("request/response touch points where parse work can happen, and serves as an upper-bound proxy.\n");
 
         log.info(report.toString());
+    }
+
+    private void logModeComparison(Map<LoopMode, LoopRunResult> loopResults) {
+        LoopRunResult openLoopResult = loopResults.get(LoopMode.OPEN_LOOP);
+        LoopRunResult closedLoopResult = loopResults.get(LoopMode.CLOSED_LOOP);
+        if (openLoopResult == null || closedLoopResult == null) {
+            return;
+        }
+
+        StringBuilder report = new StringBuilder();
+        report.append("\n=== OPEN LOOP VS CLOSED LOOP COMPARISON (P50 MS) ===\n");
+        appendComparisonLine(report, "SELECT",
+                calculateMedianMs(openLoopResult.getSqlLatencies().get(SqlType.SELECT)),
+                calculateMedianMs(closedLoopResult.getSqlLatencies().get(SqlType.SELECT)));
+        appendComparisonLine(report, "INSERT",
+                calculateMedianMs(openLoopResult.getSqlLatencies().get(SqlType.INSERT)),
+                calculateMedianMs(closedLoopResult.getSqlLatencies().get(SqlType.INSERT)));
+        appendComparisonLine(report, "UPDATE",
+                calculateMedianMs(openLoopResult.getSqlLatencies().get(SqlType.UPDATE)),
+                calculateMedianMs(closedLoopResult.getSqlLatencies().get(SqlType.UPDATE)));
+        appendComparisonLine(report, "DELETE",
+                calculateMedianMs(openLoopResult.getSqlLatencies().get(SqlType.DELETE)),
+                calculateMedianMs(closedLoopResult.getSqlLatencies().get(SqlType.DELETE)));
+        appendComparisonLine(report, "connect",
+                calculateMedianMs(openLoopResult.getStepLatencies().get(StepType.CONNECT)),
+                calculateMedianMs(closedLoopResult.getStepLatencies().get(StepType.CONNECT)));
+        appendComparisonLine(report, "executeQuery",
+                calculateMedianMs(openLoopResult.getStepLatencies().get(StepType.EXECUTE_QUERY)),
+                calculateMedianMs(closedLoopResult.getStepLatencies().get(StepType.EXECUTE_QUERY)));
+        appendComparisonLine(report, "executeUpdate",
+                calculateMedianMs(openLoopResult.getStepLatencies().get(StepType.EXECUTE_UPDATE)),
+                calculateMedianMs(closedLoopResult.getStepLatencies().get(StepType.EXECUTE_UPDATE)));
+        appendComparisonLine(report, "close",
+                calculateMedianMs(openLoopResult.getStepLatencies().get(StepType.CLOSE)),
+                calculateMedianMs(closedLoopResult.getStepLatencies().get(StepType.CLOSE)));
+        log.info(report.toString());
+    }
+
+    private void appendComparisonLine(StringBuilder report, String metric, double openLoopMs, double closedLoopMs) {
+        double deltaMs = openLoopMs - closedLoopMs;
+        report.append(String.format("%s: open=%.3f, closed=%.3f, delta=%.3f ms%n",
+                metric, openLoopMs, closedLoopMs, deltaMs));
     }
 
     private void appendLatencyLine(StringBuilder report, String type, List<Long> values) {
@@ -312,6 +360,30 @@ class H2OpenLoopLatencyIntegrationTest {
         void run(int operationIndex) throws SQLException;
     }
 
+    private static class LoopRunResult {
+        private final LoopMode loopMode;
+        private final Map<SqlType, List<Long>> sqlLatencies;
+        private final Map<StepType, List<Long>> stepLatencies;
+
+        LoopRunResult(LoopMode loopMode, Map<SqlType, List<Long>> sqlLatencies, Map<StepType, List<Long>> stepLatencies) {
+            this.loopMode = loopMode;
+            this.sqlLatencies = sqlLatencies;
+            this.stepLatencies = stepLatencies;
+        }
+
+        LoopMode getLoopMode() {
+            return loopMode;
+        }
+
+        Map<SqlType, List<Long>> getSqlLatencies() {
+            return sqlLatencies;
+        }
+
+        Map<StepType, List<Long>> getStepLatencies() {
+            return stepLatencies;
+        }
+    }
+
     private long measureStepLatency(Map<StepType, List<Long>> stepLatencies,
                                     StepType stepType,
                                     SqlOperation operation) throws SQLException {
@@ -340,6 +412,74 @@ class H2OpenLoopLatencyIntegrationTest {
                     stepLatencies.get(StepType.CLOSE).add(System.nanoTime() - closeStart);
                 }
             }
+        }
+    }
+
+    private List<LoopMode> resolveExecutionModes() throws SQLException {
+        String rawMode = System.getProperty(LOOP_MODE_PROPERTY, LoopMode.BOTH.name());
+        LoopMode loopMode = parseLoopMode(rawMode);
+        if (loopMode == LoopMode.BOTH) {
+            List<LoopMode> modes = new ArrayList<>(2);
+            modes.add(LoopMode.OPEN_LOOP);
+            modes.add(LoopMode.CLOSED_LOOP);
+            return modes;
+        }
+        List<LoopMode> singleMode = new ArrayList<>(1);
+        singleMode.add(loopMode);
+        return singleMode;
+    }
+
+    private LoopMode parseLoopMode(String rawMode) throws SQLException {
+        String normalized = rawMode.trim().toUpperCase();
+        if ("OPEN".equals(normalized)) {
+            return LoopMode.OPEN_LOOP;
+        }
+        if ("CLOSE".equals(normalized) || "CLOSED".equals(normalized)) {
+            return LoopMode.CLOSED_LOOP;
+        }
+        if ("BOTH".equals(normalized)) {
+            return LoopMode.BOTH;
+        }
+        if (LoopMode.OPEN_LOOP.name().equals(normalized)) {
+            return LoopMode.OPEN_LOOP;
+        }
+        if (LoopMode.CLOSED_LOOP.name().equals(normalized)) {
+            return LoopMode.CLOSED_LOOP;
+        }
+        throw new SQLException("Invalid " + LOOP_MODE_PROPERTY + " value: " + rawMode
+                + ". Allowed values: OPEN, CLOSED, OPEN_LOOP, CLOSED_LOOP, BOTH");
+    }
+
+    private void assertExpectedCounts(Map<SqlType, List<Long>> sqlLatencies,
+                                      Map<StepType, List<Long>> stepLatencies) {
+        assertEquals(SELECT_QUERY_COUNT, sqlLatencies.get(SqlType.SELECT).size());
+        assertEquals(WRITE_OPERATION_COUNT, sqlLatencies.get(SqlType.INSERT).size()
+                + sqlLatencies.get(SqlType.UPDATE).size()
+                + sqlLatencies.get(SqlType.DELETE).size());
+        assertFalse(sqlLatencies.get(SqlType.INSERT).isEmpty());
+        assertFalse(sqlLatencies.get(SqlType.UPDATE).isEmpty());
+        assertFalse(sqlLatencies.get(SqlType.DELETE).isEmpty());
+        assertEquals(SELECT_QUERY_COUNT + WRITE_OPERATION_COUNT, stepLatencies.get(StepType.CONNECT).size());
+        assertEquals(SELECT_QUERY_COUNT + WRITE_OPERATION_COUNT, stepLatencies.get(StepType.CLOSE).size());
+        assertEquals(SELECT_QUERY_COUNT, stepLatencies.get(StepType.EXECUTE_QUERY).size());
+        assertEquals(WRITE_OPERATION_COUNT, stepLatencies.get(StepType.EXECUTE_UPDATE).size());
+    }
+
+    private void executeWorkload(LoopMode loopMode,
+                                 int operationCount,
+                                 int operationsPerSecond,
+                                 IndexedSqlOperation operation) throws SQLException {
+        if (loopMode == LoopMode.OPEN_LOOP) {
+            executeOpenLoopWorkload(operationCount, operationsPerSecond, operation);
+            return;
+        }
+        executeClosedLoopWorkload(operationCount, operation);
+    }
+
+    private void executeClosedLoopWorkload(int operationCount,
+                                           IndexedSqlOperation operation) throws SQLException {
+        for (int i = 0; i < operationCount; i++) {
+            operation.run(i);
         }
     }
 
