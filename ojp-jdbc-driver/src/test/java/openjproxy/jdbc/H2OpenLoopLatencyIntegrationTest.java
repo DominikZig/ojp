@@ -234,13 +234,14 @@ class H2OpenLoopLatencyIntegrationTest {
         appendLatencyLine(report, "close", stepLatencies.get(StepType.CLOSE));
         report.append('\n');
 
-        long estimatedGrpcParsingEvents = stepLatencies.get(StepType.CONNECT).size()
+        long totalJdbcStepCount = stepLatencies.get(StepType.CONNECT).size()
                 + stepLatencies.get(StepType.EXECUTE_QUERY).size()
                 + stepLatencies.get(StepType.EXECUTE_UPDATE).size()
                 + stepLatencies.get(StepType.CLOSE).size();
-        report.append("=== ESTIMATED gRPC PARSING EVENTS ===\n");
-        report.append(String.format("Estimated parse count: %d%n", estimatedGrpcParsingEvents));
-        report.append("Estimation formula: connect + executeQuery + executeUpdate + close call counts\n");
+        report.append("=== gRPC PARSING PROXY ESTIMATE ===\n");
+        report.append(String.format("JDBC step count (proxy for parse opportunities): %d%n", totalJdbcStepCount));
+        report.append("Proxy formula: connect + executeQuery + executeUpdate + close call counts\n");
+        report.append("Note: this is not a direct gRPC decoder metric; it is a best-effort upper-bound proxy.\n");
 
         log.info(report.toString());
     }
