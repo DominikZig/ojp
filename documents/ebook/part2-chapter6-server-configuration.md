@@ -297,13 +297,15 @@ stateDiagram-v2
 
 ## 6.7 Slow Query Segregation
 
-One of OJP's useful features is slow query segregation, which can help prevent long-running queries from starving fast operations in certain workload scenarios. The server dynamically classifies operations as fast or slow based on historical patterns, then manages separate connection slots for each category. This can be beneficial when you have a mixed workload where a heavy analytical query running for minutes might otherwise prevent your quick transaction processing from getting database connections.
+One of OJP's useful features is slow query segregation. **Use it strongly when one server handles mixed workloads** (fast OLTP-style queries plus slower analytics/reporting queries). The server classifies operations as fast or slow based on historical patterns and manages separate slots for each category, so long-running queries do not starve fast requests.
 
 The feature works by monitoring operation execution times and building a statistical model of each operation's performance characteristics. When an operation consistently takes longer than average, the server classifies it as slow and routes it to the slow slot pool. Fast operations continue using the fast slot pool, maintaining their responsiveness even under mixed workload pressure.
 
 **[IMAGE PROMPT: Create a side-by-side comparison showing connection pool behavior. Left side labeled "Without Segregation": single queue with fast queries (lightning bolt icons) blocked behind slow queries (turtle icons), showing red warning indicators. Right side labeled "With Segregation": two separate queues, top queue "Fast Slots (80%)" with lightning bolts flowing freely, bottom queue "Slow Slots (20%)" with turtle icons, showing green success indicators. Style: Before/after comparison with color-coded performance indicators.]**
 
-Slow query segregation can be beneficial because it provides advantages with minimal configuration when you have a mixed workload of fast and slow queries. The percentage of slots reserved for slow operations defaults to 20%, which accommodates most workload patterns. You might increase this if you have many legitimate long-running queries, or decrease it if your workload is predominantly fast transactional operations.
+For mixed workloads, this feature usually gives clear value with minimal configuration. The default of 20% slow slots is a good starting point. You might increase this if you have many legitimate long-running queries.
+
+For **pure OLTP** (mostly short queries) or **pure OLAP** (mostly long-running queries), this feature is often not useful. In those cases, keep it disabled unless monitoring shows real slow-vs-fast contention.
 
 ```bash
 # Enable with default 20% slow slots

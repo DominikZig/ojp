@@ -112,7 +112,7 @@ Located in [targeted-problem/](targeted-problem/):
 ### Design Documents
 
 Located in [designs/](designs/):
-- [Slow Query Segregation](designs/SLOW_QUERY_SEGREGATION.md)
+- [Slow Query Segregation](designs/SLOW_QUERY_SEGREGATION.md) (strongly recommended for mixed fast+slow workloads; usually unnecessary for pure OLTP or pure OLAP)
 - [StatementServiceImpl Action Pattern Migration](designs/STATEMENTSERVICE_ACTION_PATTERN_MIGRATION.md)
 
 ### Fixed Issues

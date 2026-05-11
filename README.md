@@ -152,7 +152,7 @@ If Docker is not available in your environment, you can run OJP Server as a stan
 - [Connection Pool Configuration](documents/configuration/ojp-jdbc-configuration.md) - OJP JDBC driver setup, connection pool settings, and environment-specific configuration (ojp-dev.properties, ojp-staging.properties, ojp-prod.properties).
 - [OJP Server Configuration](documents/configuration/ojp-server-configuration.md) - Server startup options, runtime configuration, and SQL enhancer with schema loading.
 - [Multinode Configuration](documents/multinode/README.md) - High availability and load balancing with multiple OJP servers.
-- [Slow query segregation feature](documents/designs/SLOW_QUERY_SEGREGATION.md) - Feature that prevent connection starvation by slow queries (or statements).
+- [Slow query segregation feature](documents/designs/SLOW_QUERY_SEGREGATION.md) - Strongly recommended for mixed fast+slow query workloads; usually not needed for pure OLTP or pure OLAP workloads.
 - [Telemetry and Observability](documents/telemetry/README.md) - OpenTelemetry integration and monitoring setup.
 - [OJP Components](documents/OJPComponents.md) - Core modules that define OJP’s architecture, including the server, JDBC driver, and shared gRPC contracts.
 - [Targeted Problem and Solution](documents/targeted-problem/README.md) - Explanation of the problem OJP solves and how it addresses it.

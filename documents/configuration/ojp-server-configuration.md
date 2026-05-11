@@ -155,7 +155,7 @@ For full integration examples including Docker Compose setups, see the **[Teleme
 
 | Property                                           | Environment Variable                               | Type    | Default  | Description                                      | Since |
 |----------------------------------------------------|----------------------------------------------------|---------|----------|--------------------------------------------------|-------|
-| `ojp.server.slowQuerySegregation.enabled`         | `OJP_SERVER_SLOWQUERYSEGREGATION_ENABLED`         | boolean | false    | Enable/disable slow query segregation feature   | 0.2.0-beta |
+| `ojp.server.slowQuerySegregation.enabled`         | `OJP_SERVER_SLOWQUERYSEGREGATION_ENABLED`         | boolean | false    | Enable for mixed fast+slow workloads; usually keep off for pure OLTP/OLAP | 0.2.0-beta |
 | `ojp.server.slowQuerySegregation.slowSlotPercentage` | `OJP_SERVER_SLOWQUERYSEGREGATION_SLOWSLOTPERCENTAGE` | int     | 20       | Percentage of slots for slow operations (0-100) | 0.2.0-beta |
 | `ojp.server.slowQuerySegregation.idleTimeout`     | `OJP_SERVER_SLOWQUERYSEGREGATION_IDLETIMEOUT`     | long    | 10000    | Idle timeout for slot borrowing (milliseconds)  | 0.2.0-beta |
 | `ojp.server.slowQuerySegregation.slowSlotTimeout` | `OJP_SERVER_SLOWQUERYSEGREGATION_SLOWSLOTTIMEOUT` | long    | 120000   | Timeout for acquiring slow operation slots (ms) | 0.2.0-beta |
@@ -401,6 +401,10 @@ You can configure different IP restrictions for the Prometheus metrics endpoint:
 
 The Slow Query Segregation feature monitors all database operations and classifies them as "slow" or "fast" based on their execution time, then manages the number of concurrently executing operations to prevent slow operations from blocking the system.
 
+**Strong recommendation:** Enable this when one OJP server handles both fast transactional queries and slower analytical/reporting queries.
+
+**Discouraged usage:** For pure OLTP (mostly fast queries) or pure OLAP (mostly long queries), this usually brings limited value. Keep it disabled unless monitoring shows clear starvation of one query class by another.
+
 ### How It Works
 
 1. **Operation Monitoring**: Every SQL operation is tracked using a hash of the SQL statement
@@ -432,7 +436,7 @@ ojp.server.slowQuerySegregation.fastSlotTimeout=60000
 
 - **Per-datasource isolation**: Each datasource maintains independent slow/fast lanes based on actual pool sizes
 - **Enhanced resource protection**: Smart borrowing preserves at least one slot per pool and requires prior activity
-- **Prevents resource starvation**: Fast operations aren't blocked by slow ones within each datasource
+- **Prevents resource starvation in mixed workloads**: Fast operations aren't blocked by slow ones within each datasource
 - **Adaptive learning**: Automatically discovers and adapts to slow operations per datasource
 - **Efficient resource utilization**: Smart slot borrowing maximizes connection pool usage while maintaining safety
 
@@ -531,7 +535,7 @@ data:
 2. **Can't connect**: Verify client IP is in the allowed list
 3. **Metrics unavailable**: Check Prometheus port and IP whitelist
 4. **Performance issues**: Tune virtual thread mode, thread pool size (if virtual threads are disabled), connection timeouts, and slow query segregation settings
-5. **Slow queries blocking fast ones**: Enable slow query segregation and tune slot percentages
+5. **Slow queries blocking fast ones in mixed workloads**: Enable slow query segregation and tune slot percentages (for pure OLTP/OLAP, keep it disabled unless metrics prove a benefit)
 
 ### Debugging Configuration
 
