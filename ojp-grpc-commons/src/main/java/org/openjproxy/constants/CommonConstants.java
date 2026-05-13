@@ -75,7 +75,7 @@ public class CommonConstants {
     public static final long DEFAULT_IDLE_TIMEOUT = 600000;  // 10 minutes
     public static final long DEFAULT_MAX_LIFETIME = 1800000; // 30 minutes
     public static final long DEFAULT_CONNECTION_TIMEOUT = 10000; // Reduced from 30s to 10s for faster failure
-    public static final long FAIL_FAST_POOL_CONNECTION_TIMEOUT_MS = 1L; // Pool should fail fast; waiting is handled by semaphore gatekeeping
+    public static final long FAIL_FAST_POOL_CONNECTION_TIMEOUT_MS = 1L; // HikariCP clamps this to 250ms minimum; semaphore gatekeeping enforces the wait budget
 
     // Prepared statement cache defaults (global server-side)
     public static final boolean DEFAULT_STATEMENT_CACHE_ENABLED = true;

@@ -45,11 +45,10 @@ public class CreateSlowQuerySegregationManagerAction {
      * @param connHash The connection hash
      * @param actualPoolSize The actual pool size (max XA transactions for XA, max pool size for non-XA)
      * @param isXA Whether this is an XA connection
-     * @param fastSlotTimeoutMillis The fast-slot timeout in milliseconds
+     * @param admissionTimeoutMillis The timeout budget for admission-control semaphores in milliseconds
      */
-    public void execute(ActionContext context, String connHash, int actualPoolSize, boolean isXA, long fastSlotTimeoutMillis) {
+    public void execute(ActionContext context, String connHash, int actualPoolSize, boolean isXA, long admissionTimeoutMillis) {
         boolean slowQueryEnabled = context.getServerConfiguration().isSlowQuerySegregationEnabled();
-        long admissionTimeoutMillis = fastSlotTimeoutMillis;
 
         if (isXA) {
             // XA-specific handling
