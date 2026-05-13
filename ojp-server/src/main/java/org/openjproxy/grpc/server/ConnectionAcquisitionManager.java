@@ -102,10 +102,10 @@ public class ConnectionAcquisitionManager {
                 int maxPoolSize = hikariDataSource.getMaximumPoolSize();
                 int waitingThreads = hikariDataSource.getHikariPoolMXBean().getThreadsAwaitingConnection();
 
-                if (idleConnections == 0 && totalConnections >= maxPoolSize) {
+                if (idleConnections == 0 && totalConnections >= maxPoolSize && activeConnections > 0) {
                     String message = String.format(
-                            "Connection acquisition failed fast for hash: %s. Pool fully utilized - Active: %d, Total: %d, Max: %d, Waiting threads: %d",
-                            connectionHash, activeConnections, totalConnections, maxPoolSize, waitingThreads);
+                            "Connection acquisition pre-check failed for hash: %s. Pool exhausted (idle=0, total=%d, max=%d, active=%d, waiting=%d). Request will not wait at pool level.",
+                            connectionHash, totalConnections, maxPoolSize, activeConnections, waitingThreads);
                     poolMetrics.recordPoolExhaustion(poolName);
                     log.error(message);
                     throw new SQLException(message);
@@ -113,7 +113,7 @@ public class ConnectionAcquisitionManager {
             } catch (SQLException e) {
                 throw e;
             } catch (Exception e) {
-                log.debug("Could not evaluate fail-fast pool state for hash: {}", connectionHash);
+                log.debug("Could not evaluate fail-fast pool state for hash: {}: {}", connectionHash, e.getMessage());
             }
         }
 
