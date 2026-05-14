@@ -302,7 +302,7 @@ These examples demonstrate recommended settings for each environment and can be 
 | `ojp.connection.pool.minimumIdle`     | int  | 5       | Minimum number of idle connections maintained            | 0.2.0-beta |
 | `ojp.connection.pool.idleTimeout`     | long | 600000  | Maximum time (ms) a connection can sit idle (10 minutes) | 0.2.0-beta |
 | `ojp.connection.pool.maxLifetime`     | long | 1800000 | Maximum lifetime (ms) of a connection (30 minutes)       | 0.2.0-beta |
-| `ojp.connection.pool.connectionTimeout` | long | 10000   | Maximum time (ms) to wait for a connection (10 seconds)  | 0.2.0-beta |
+| `ojp.connection.pool.connectionTimeout` | long | 10000   | Semaphore admission wait budget (ms) for non-XA requests; pool acquisition is fail-fast  | 0.2.0-beta |
 | `ojp.connection.pool.defaultTransactionIsolation` | string/int | READ_COMMITTED | Default transaction isolation level (see below) | 0.2.0-beta |
 
 **Note**: These properties can be used with or without a datasource name prefix. For example:
@@ -531,7 +531,7 @@ When using XA (distributed transaction) connections via `OjpXADataSource` **with
 | `ojp.xa.connection.pool.enabled` | boolean | true | Enable/disable XA connection pooling | 0.2.0-beta |
 | `ojp.xa.connection.pool.maxTotal` | int | 20 | Maximum XA backend sessions per server | 0.2.0-beta |
 | `ojp.xa.connection.pool.minIdle` | int | 5 | Minimum idle XA sessions (pre-warmed) | 0.2.0-beta |
-| `ojp.xa.connection.pool.connectionTimeout` | long | 20000 | Max wait time (ms) to borrow session (20 seconds) | 0.2.0-beta |
+| `ojp.xa.connection.pool.connectionTimeout` | long | 20000 | Semaphore admission wait budget (ms) for XA requests; backend pool borrow is fail-fast | 0.2.0-beta |
 | `ojp.xa.connection.pool.idleTimeout` | long | 600000 | Max idle time (ms) before eviction (10 minutes) | 0.2.0-beta |
 | `ojp.xa.connection.pool.maxLifetime` | long | 1800000 | Max lifetime (ms) of XA session (30 minutes) | 0.2.0-beta |
 | `ojp.xa.connection.pool.timeBetweenEvictionRuns` | long | 30000 | How often evictor runs (ms) to clean up excess idle connections (30 seconds) | 0.2.0-beta |

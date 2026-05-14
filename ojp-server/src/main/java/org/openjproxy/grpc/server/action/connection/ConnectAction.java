@@ -9,6 +9,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.openjproxy.database.DatabaseUtils;
 import org.openjproxy.datasource.ConnectionPoolProviderRegistry;
 import org.openjproxy.datasource.PoolConfig;
+import org.openjproxy.constants.CommonConstants;
 import org.openjproxy.grpc.server.MultinodePoolCoordinator;
 import org.openjproxy.grpc.server.MultinodeXaCoordinator;
 import org.openjproxy.grpc.server.UnpooledConnectionDetails;
@@ -213,7 +214,7 @@ public class ConnectAction implements Action<ConnectionDetails, SessionInfo> {
                                 .password(connectionDetails.getPassword())
                                 .maxPoolSize(maxPoolSize)
                                 .minIdle(minIdle)
-                                .connectionTimeoutMs(dsConfig.getConnectionTimeout())
+                                .connectionTimeoutMs(CommonConstants.FAIL_FAST_POOL_CONNECTION_TIMEOUT_MS)
                                 .idleTimeoutMs(dsConfig.getIdleTimeout())
                                 .maxLifetimeMs(dsConfig.getMaxLifetime())
                                 .defaultTransactionIsolation(defaultTransactionIsolation)

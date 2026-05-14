@@ -5,6 +5,7 @@ import com.openjproxy.grpc.SessionInfo;
 import io.grpc.stub.StreamObserver;
 import lombok.extern.slf4j.Slf4j;
 import org.openjproxy.database.DatabaseUtils;
+import org.openjproxy.constants.CommonConstants;
 import org.openjproxy.grpc.server.MultinodePoolCoordinator;
 import org.openjproxy.grpc.server.Session;
 import org.openjproxy.grpc.server.action.ActionContext;
@@ -245,7 +246,8 @@ public class HandleXAConnectionWithPoolingAction {
                 // Use calculated pool sizes (with multinode coordination if applicable)
                 xaPoolConfig.put("xa.maxPoolSize", String.valueOf(maxPoolSize));
                 xaPoolConfig.put("xa.minIdle", String.valueOf(minIdle));
-                xaPoolConfig.put("xa.connectionTimeoutMs", String.valueOf(xaConfig.getConnectionTimeout()));
+                xaPoolConfig.put("xa.connectionTimeoutMs",
+                        String.valueOf(CommonConstants.FAIL_FAST_POOL_CONNECTION_TIMEOUT_MS));
                 xaPoolConfig.put("xa.idleTimeoutMs", String.valueOf(xaConfig.getIdleTimeout()));
                 xaPoolConfig.put("xa.maxLifetimeMs", String.valueOf(xaConfig.getMaxLifetime()));
                 // Evictor configuration
@@ -270,7 +272,8 @@ public class HandleXAConnectionWithPoolingAction {
                 registry.resizeBackendPool(maxPoolSize, minIdle);
 
                 // Create slow query segregation manager for XA
-                CreateSlowQuerySegregationManagerAction.getInstance().execute(context, connHash, actualMaxXaTransactions, true, xaStartTimeoutMillis);
+                CreateSlowQuerySegregationManagerAction.getInstance().execute(
+                        context, connHash, actualMaxXaTransactions, true, xaConfig.getConnectionTimeout());
 
                 log.info("[XA-POOL-CREATE] Successfully created XA pool for connHash={} - maxPoolSize={}, minIdle={}, multinode={}, poolObject={}",
                         connHash, maxPoolSize, minIdle, serverEndpoints != null && !serverEndpoints.isEmpty(),
