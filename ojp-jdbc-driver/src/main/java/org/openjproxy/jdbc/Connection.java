@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 @Slf4j
@@ -42,15 +43,21 @@ public class Connection implements java.sql.Connection {
     private boolean autoCommit = true;
     private boolean readOnly = false;
     private boolean closed;
+    private final boolean closeSynchronously;
 
     // For server recovery and connection redistribution
     private volatile boolean forceInvalid = false;
 
     public Connection(SessionInfo session, StatementService statementService, DbName dbName) {
+        this(session, statementService, dbName, CommonConstants.DEFAULT_JDBC_CLOSE_SYNCHRONOUS);
+    }
+
+    public Connection(SessionInfo session, StatementService statementService, DbName dbName, boolean closeSynchronously) {
         this.session = session;
         this.statementService = statementService;
         this.closed = false;
         this.dbName = dbName;
+        this.closeSynchronously = closeSynchronously;
     }
 
     /**
@@ -181,7 +188,18 @@ public class Connection implements java.sql.Connection {
         // Always call terminateSession to ensure server-side resources are released
         // This is critical for multinode scenarios where connect() may have been called on multiple servers
         if (this.session != null) {
-            this.statementService.terminateSession(this.session);
+            SessionInfo sessionToTerminate = this.session;
+            if (this.closeSynchronously) {
+                this.statementService.terminateSession(sessionToTerminate);
+            } else {
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        this.statementService.terminateSession(sessionToTerminate);
+                    } catch (SQLException e) {
+                        log.warn("Async terminateSession failed for session {}", sessionToTerminate.getSessionUUID(), e);
+                    }
+                });
+            }
             this.session = null;
         }
         this.closed = true;

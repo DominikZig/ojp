@@ -24,6 +24,7 @@ public class DatasourcePropertiesLoader {
     private static final String DEFAULT_DATASOURCE_NAME = "default";
     private static final String OJP_POOL_PREFIX = "ojp.connection.pool.";
     private static final String OJP_XA_PREFIX = "ojp.xa.";
+    private static final String OJP_JDBC_PREFIX = "ojp.jdbc.";
 
     /**
      * Apply OJP-relevant properties from the JDBC {@code info} {@link Properties} argument
@@ -31,8 +32,8 @@ public class DatasourcePropertiesLoader {
      *
      * <p>Properties from {@code info} have the <em>highest</em> precedence and override any value
      * already present in {@code base} (which was loaded from the properties file, system properties,
-     * or environment variables). Only keys matching the {@code ojp.connection.pool.*} or
-     * {@code ojp.xa.*} pattern are copied; JDBC-standard keys such as {@code user} and
+     * or environment variables). Only keys matching the {@code ojp.connection.pool.*},
+     * {@code ojp.xa.*}, or {@code ojp.jdbc.*} pattern are copied; JDBC-standard keys such as {@code user} and
      * {@code password} are intentionally ignored.
      *
      * <p>Full property precedence after merging (highest to lowest):
@@ -152,11 +153,15 @@ public class DatasourcePropertiesLoader {
     }
 
     private static boolean hasPrefixedOjpKey(String key, String prefixDot) {
-        return key.startsWith(prefixDot + OJP_POOL_PREFIX) || key.startsWith(prefixDot + OJP_XA_PREFIX);
+        return key.startsWith(prefixDot + OJP_POOL_PREFIX)
+                || key.startsWith(prefixDot + OJP_XA_PREFIX)
+                || key.startsWith(prefixDot + OJP_JDBC_PREFIX);
     }
 
     private static boolean isUnprefixedOjpKey(String key) {
-        return key.startsWith(OJP_POOL_PREFIX) || key.startsWith(OJP_XA_PREFIX);
+        return key.startsWith(OJP_POOL_PREFIX)
+                || key.startsWith(OJP_XA_PREFIX)
+                || key.startsWith(OJP_JDBC_PREFIX);
     }
 
     private static void copyUnprefixedOjpProperties(Properties target, Properties source) {

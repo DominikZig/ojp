@@ -49,6 +49,7 @@ public class CommonConstants {
     // Multinode configuration property keys
     public static final String MULTINODE_RETRY_ATTEMPTS_PROPERTY = "ojp.multinode.retryAttempts";
     public static final String MULTINODE_RETRY_DELAY_PROPERTY = "ojp.multinode.retryDelayMs";
+    public static final String JDBC_CLOSE_SYNC_PROPERTY = "ojp.jdbc.connection.close.synchronous";
 
     // Transaction isolation configuration property key
     public static final String DEFAULT_TRANSACTION_ISOLATION_PROPERTY = "ojp.connection.pool.defaultTransactionIsolation";
@@ -96,6 +97,7 @@ public class CommonConstants {
     // Multinode configuration defaults - addressing PR #39 review comment #1
     public static final int DEFAULT_MULTINODE_RETRY_ATTEMPTS = -1;  // -1 = retry indefinitely
     public static final long DEFAULT_MULTINODE_RETRY_DELAY_MS = 5000;  // 5 seconds between retries
+    public static final boolean DEFAULT_JDBC_CLOSE_SYNCHRONOUS = false;
 
     // XA pool evictor defaults (Apache Commons Pool 2)
     public static final long DEFAULT_XA_TIME_BETWEEN_EVICTION_RUNS_MS = 30000;  // 30 seconds

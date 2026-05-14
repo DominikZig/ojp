@@ -8,9 +8,21 @@ The OJP JDBC driver supports configurable connection pool settings via an `ojp.p
 
 ## Connection Close Behavior
 
-When application code calls `Connection.close()`, the OJP JDBC driver now performs session termination as a **synchronous** operation.
+When application code calls `Connection.close()`, the OJP JDBC driver performs session termination **asynchronously by default**.
 
-That means the close call waits for the server to acknowledge session termination instead of sending the request in a fire-and-forget way.
+That means the close call returns immediately and session termination runs in the background by default.
+
+If you want strict synchronous behavior, set:
+
+```properties
+ojp.jdbc.connection.close.synchronous=true
+```
+
+This property also supports datasource prefixes:
+
+```properties
+myApp.ojp.jdbc.connection.close.synchronous=true
+```
 
 ### Retry Rules
 
@@ -28,9 +40,10 @@ The driver does **not** retry when the failure is not transient connectivity, fo
 
 ### Why This Matters
 
-This makes `close()` more reliable during transient network issues and reduces the chance of leaving server-side sessions alive longer than necessary.
+This keeps close-path latency low by default while still allowing strict blocking behavior when required.
 
-If all 3 connection-level attempts fail, `close()` fails and surfaces the error to the caller.
+With asynchronous close (default), termination failures are logged.
+With synchronous close (`ojp.jdbc.connection.close.synchronous=true`), failures are surfaced to the caller.
 
 ## Multi-DataSource Configuration
 
@@ -309,6 +322,12 @@ These examples demonstrate recommended settings for each environment and can be 
 - `ojp.connection.pool.maximumPoolSize=20` (default datasource)
 - `myApp.ojp.connection.pool.maximumPoolSize=50` (myApp datasource)
 
+### JDBC Client Properties
+
+| Property | Type | Default | Description | Since |
+|----------|------|---------|-------------|-------|
+| `ojp.jdbc.connection.close.synchronous` | boolean | false | Controls `Connection.close()` behavior. `false` = async close (default), `true` = close waits for terminate-session RPC. | 0.4.2-beta |
+
 ### Programmatic Configuration via `DriverManager.getConnection()`
 
 In addition to `ojp.properties` files and system properties, you can supply pool configuration
@@ -338,7 +357,7 @@ Connection conn = DriverManager.getConnection(
 | 3 | System properties | `-Dojp.connection.pool.maximumPoolSize=50` |
 | 4 | Properties file (`ojp.properties`) | `ojp.connection.pool.maximumPoolSize=50` |
 
-Only `ojp.connection.pool.*` and `ojp.xa.*` keys are read from `info`.
+Only `ojp.connection.pool.*`, `ojp.xa.*`, and `ojp.jdbc.*` keys are read from `info`.
 JDBC-standard keys such as `user` and `password` are extracted separately and are never
 treated as pool configuration.
 
