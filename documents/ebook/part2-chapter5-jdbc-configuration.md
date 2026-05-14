@@ -179,7 +179,7 @@ String orOpts = "jdbc:ojp[localhost:1059]_oracle:thin:@localhost:1521/XEPDB1?" +
 
 When your application calls `Connection.close()`, the OJP JDBC driver terminates the server-side session **asynchronously by default**. In practical terms, `close()` returns immediately and termination runs in the background.
 
-This behavior is intentionally conservative because session termination is what releases the server-side session state that OJP uses to track transactional and result-set resources.
+This default behavior is performance-oriented because session termination runs in the background and avoids blocking application threads on close.
 
 If you need blocking behavior, set:
 
