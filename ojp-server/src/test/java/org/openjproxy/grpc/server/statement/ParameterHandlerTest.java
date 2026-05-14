@@ -155,7 +155,7 @@ class ParameterHandlerTest {
 
     @Test
     void shouldBindTimestampParameterDirectly() throws SQLException {
-        Timestamp value = new Timestamp(System.currentTimeMillis());
+        Timestamp value = Timestamp.valueOf("2024-01-15 12:30:00");
         Parameter param = Parameter.builder().index(1).type(ParameterType.TIMESTAMP).values(List.of(value)).build();
         ParameterHandler.addParam(sessionManager, session, 1, ps, param);
         verify(ps).setTimestamp(1, value);

@@ -108,6 +108,8 @@ public class ParameterHandler {
      * Returns {@code true} for parameter types that may perform blocking I/O or involve
      * complex JDBC driver internals (BLOB, CLOB, streams, readers, SQLXML, OBJECT, ARRAY).
      * These types still run inside a timeout-protected {@link Future}.
+     *
+     * <p>Package-private to allow direct testing without exposing as public API.</p>
      */
     static boolean isRiskyParameterType(ParameterType type) {
         switch (type) {
