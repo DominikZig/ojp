@@ -326,6 +326,16 @@ The idle timeout setting controls when slots can borrow from the other pool. If 
 
 Timeout settings for acquiring slots provide backpressure when pools are exhausted. Fast operations wait up to 60 seconds by default, while slow operations get more generous 120-second timeouts. These asymmetric timeouts reflect the different expectations: fast operations should complete quickly or fail, while slow operations naturally take longer and deserve more patience.
 
+Admission queue depth is also bounded to prevent unbounded waiter buildup under heavy surge traffic. Configure this with `ojp.server.admissionControl.maxQueueDepth` (default `0`, which auto-calculates from total slots). This limit applies to **all** admission-control modes, including admission-control-only mode when slow query segregation is disabled.
+
+```bash
+# Keep auto queue depth (recommended starting point)
+-Dojp.server.admissionControl.maxQueueDepth=0
+
+# Or set an explicit queue cap
+-Dojp.server.admissionControl.maxQueueDepth=128
+```
+
 **[IMAGE PROMPT: Create a dynamic allocation diagram showing how idle slots can be borrowed between pools. Show two pools: "Fast Slots" (4 boxes, 3 active, 1 idle) and "Slow Slots" (2 boxes, 1 active, 1 idle). Draw a curved arrow labeled "Temporary Borrow (if idle >10s)" from the idle slow slot to fast pool. Include a timer icon and "Returns when fast demand drops" annotation. Use green for active, gray for idle, and dotted lines for temporary borrowing. Style: Technical system diagram with clear state visualization.]**
 
 The classification algorithm adapts to your workload patterns over time. An operation that starts fast but becomes slow under load will gradually migrate to slow slot management. This dynamic behavior means you don't need to manually categorize your queries—the server learns from observation.

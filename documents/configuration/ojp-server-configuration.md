@@ -174,6 +174,9 @@ Controls how the server batches rows into gRPC streaming messages when returning
 | `ojp.server.slowQuerySegregation.idleTimeout`     | `OJP_SERVER_SLOWQUERYSEGREGATION_IDLETIMEOUT`     | long    | 10000    | Idle timeout for slot borrowing (milliseconds)  | 0.2.0-beta |
 | `ojp.server.slowQuerySegregation.slowSlotTimeout` | `OJP_SERVER_SLOWQUERYSEGREGATION_SLOWSLOTTIMEOUT` | long    | 120000   | Timeout for acquiring slow operation slots (ms) | 0.2.0-beta |
 | `ojp.server.slowQuerySegregation.fastSlotTimeout` | `OJP_SERVER_SLOWQUERYSEGREGATION_FASTSLOTTIMEOUT` | long    | 60000    | Timeout for acquiring fast operation slots (ms) | 0.2.0-beta |
+| `ojp.server.admissionControl.maxQueueDepth`       | `OJP_SERVER_ADMISSIONCONTROL_MAXQUEUEDEPTH`       | int     | 0        | Max admission waiters before fail-fast overload (0 = auto from total slots), applies with or without slow query segregation | 0.4.16-SNAPSHOT |
+
+> Backward compatibility: `ojp.server.slowQuerySegregation.maxQueueDepth` is still accepted as a legacy alias.
 
 ### SQL Enhancer and Schema Loader Settings
 
@@ -444,6 +447,9 @@ ojp.server.slowQuerySegregation.slowSlotTimeout=120000
 
 # Timeout for acquiring fast operation slots (milliseconds)
 ojp.server.slowQuerySegregation.fastSlotTimeout=60000
+
+# Admission queue depth cap across all admission-control modes (0 = auto)
+ojp.server.admissionControl.maxQueueDepth=0
 ```
 
 ### Benefits
