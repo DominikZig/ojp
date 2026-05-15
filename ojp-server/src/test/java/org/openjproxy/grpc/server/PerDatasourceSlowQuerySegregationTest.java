@@ -262,6 +262,7 @@ class PerDatasourceSlowQuerySegregationTest {
             assertEquals(9100L, fastTimeout, "Fast slot timeout should come from slow query segregation setting");
             assertEquals(17300L, slowTimeout, "Slow slot timeout should come from slow query segregation setting");
         } finally {
+            System.clearProperty("ojp.server.slowQuerySegregation.enabled");
             System.clearProperty("ojp.server.slowQuerySegregation.fastSlotTimeout");
             System.clearProperty("ojp.server.slowQuerySegregation.slowSlotTimeout");
         }
