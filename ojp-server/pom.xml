@@ -139,7 +139,7 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-api</artifactId>
-            <version>1.60.1</version>
+            <version>1.62.0</version>
         </dependency>
 
         <!-- OpenTelemetry SDK -->
@@ -147,7 +147,7 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-sdk</artifactId>
-            <version>1.60.1</version>
+            <version>1.62.0</version>
         </dependency>
 
         <!-- OpenTelemetry gRPC instrumentation -->
@@ -171,7 +171,7 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-zipkin</artifactId>
-            <version>1.60.1</version>
+            <version>1.62.0</version>
         </dependency>
 
         <!-- OTLP trace exporter (alternative to Zipkin, e.g. for Jaeger/Tempo) -->
@@ -179,7 +179,7 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-otlp</artifactId>
-            <version>1.60.1</version>
+            <version>1.62.0</version>
         </dependency>
 
         <!-- HTTP server for metrics endpoint -->
@@ -259,7 +259,7 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-sdk-testing</artifactId>
-            <version>1.60.1</version>
+            <version>1.62.0</version>
             <scope>test</scope>
         </dependency>
 
