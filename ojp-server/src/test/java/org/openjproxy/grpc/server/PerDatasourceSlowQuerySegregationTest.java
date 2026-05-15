@@ -204,6 +204,10 @@ class PerDatasourceSlowQuerySegregationTest {
 
     @Test
     void shouldUseConfiguredSlowQuerySlotTimeoutsWhenSegregationEnabled() throws Exception {
+        String originalSqsEnabled = System.getProperty("ojp.server.slowQuerySegregation.enabled");
+        String originalFastSlotTimeout = System.getProperty("ojp.server.slowQuerySegregation.fastSlotTimeout");
+        String originalSlowSlotTimeout = System.getProperty("ojp.server.slowQuerySegregation.slowSlotTimeout");
+
         System.setProperty("ojp.server.slowQuerySegregation.enabled", "true");
         System.setProperty("ojp.server.slowQuerySegregation.fastSlotTimeout", "9100");
         System.setProperty("ojp.server.slowQuerySegregation.slowSlotTimeout", "17300");
@@ -251,20 +255,23 @@ class PerDatasourceSlowQuerySegregationTest {
 
             assertNotNull(manager, "Manager should exist for connected datasource");
 
-            Field fastTimeoutField = AdmissionControlManager.class.getDeclaredField("fastSlotTimeoutMs");
-            fastTimeoutField.setAccessible(true);
-            Field slowTimeoutField = AdmissionControlManager.class.getDeclaredField("slowSlotTimeoutMs");
-            slowTimeoutField.setAccessible(true);
-
-            long fastTimeout = (long) fastTimeoutField.get(manager);
-            long slowTimeout = (long) slowTimeoutField.get(manager);
+            long fastTimeout = manager.getFastSlotTimeoutMs();
+            long slowTimeout = manager.getSlowSlotTimeoutMs();
 
             assertEquals(9100L, fastTimeout, "Fast slot timeout should come from slow query segregation setting");
             assertEquals(17300L, slowTimeout, "Slow slot timeout should come from slow query segregation setting");
         } finally {
-            System.clearProperty("ojp.server.slowQuerySegregation.enabled");
-            System.clearProperty("ojp.server.slowQuerySegregation.fastSlotTimeout");
-            System.clearProperty("ojp.server.slowQuerySegregation.slowSlotTimeout");
+            restoreSystemProperty("ojp.server.slowQuerySegregation.enabled", originalSqsEnabled);
+            restoreSystemProperty("ojp.server.slowQuerySegregation.fastSlotTimeout", originalFastSlotTimeout);
+            restoreSystemProperty("ojp.server.slowQuerySegregation.slowSlotTimeout", originalSlowSlotTimeout);
+        }
+    }
+
+    private static void restoreSystemProperty(String key, String value) {
+        if (value == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, value);
         }
     }
 }

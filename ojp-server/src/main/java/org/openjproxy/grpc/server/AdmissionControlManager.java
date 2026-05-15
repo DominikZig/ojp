@@ -303,6 +303,20 @@ public class AdmissionControlManager {
     }
 
     /**
+     * Gets configured fast-slot timeout (for testing/diagnostics).
+     */
+    long getFastSlotTimeoutMs() {
+        return fastSlotTimeoutMs;
+    }
+
+    /**
+     * Gets configured slow-slot timeout (for testing/diagnostics).
+     */
+    long getSlowSlotTimeoutMs() {
+        return slowSlotTimeoutMs;
+    }
+
+    /**
      * Functional interface for operations that can be executed with segregation.
      */
     @FunctionalInterface
