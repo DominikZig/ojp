@@ -40,10 +40,12 @@ public class AdmissionControlManager {
      * @param slowSlotTimeoutMs The timeout in milliseconds for acquiring slow operation slots
      * @param fastSlotTimeoutMs The timeout in milliseconds for acquiring fast operation slots
      * @param updateGlobalAvgIntervalSeconds The interval in seconds for updating global average (0 = update every query)
+     * @param maxWaitQueueDepth Maximum waiting thread queue depth per semaphore (0 = auto)
      * @param enabled Whether admission control is enabled
      */
     public AdmissionControlManager(int totalSlots, int slowSlotPercentage, long idleTimeoutMs,
-                                     long slowSlotTimeoutMs, long fastSlotTimeoutMs, long updateGlobalAvgIntervalSeconds, boolean enabled) {
+                                     long slowSlotTimeoutMs, long fastSlotTimeoutMs, long updateGlobalAvgIntervalSeconds,
+                                     int maxWaitQueueDepth, boolean enabled) {
         this.enabled = enabled;
         this.admissionControlOnly = enabled && slowSlotPercentage == 0;
         this.slowSlotTimeoutMs = slowSlotTimeoutMs;
@@ -51,9 +53,10 @@ public class AdmissionControlManager {
         this.performanceMonitor = new QueryPerformanceMonitor(updateGlobalAvgIntervalSeconds);
 
         if (enabled) {
-            this.slotManager = new SlotManager(totalSlots, slowSlotPercentage, idleTimeoutMs);
-            logger.info("AdmissionControlManager initialized: enabled={}, admissionControlOnly={}, totalSlots={}, slowSlotPercentage={}%, idleTimeout={}ms, slowSlotTimeout={}ms, fastSlotTimeout={}ms, updateGlobalAvgInterval={}s",
-                    enabled, admissionControlOnly, totalSlots, slowSlotPercentage, idleTimeoutMs, slowSlotTimeoutMs, fastSlotTimeoutMs, updateGlobalAvgIntervalSeconds);
+            this.slotManager = new SlotManager(totalSlots, slowSlotPercentage, idleTimeoutMs, maxWaitQueueDepth);
+            logger.info("AdmissionControlManager initialized: enabled={}, admissionControlOnly={}, totalSlots={}, slowSlotPercentage={}%, idleTimeout={}ms, slowSlotTimeout={}ms, fastSlotTimeout={}ms, updateGlobalAvgInterval={}s, maxWaitQueueDepth={}",
+                    enabled, admissionControlOnly, totalSlots, slowSlotPercentage, idleTimeoutMs, slowSlotTimeoutMs,
+                    fastSlotTimeoutMs, updateGlobalAvgIntervalSeconds, slotManager.getMaxWaitQueueDepth());
         } else {
             this.slotManager = null;
             logger.info("AdmissionControlManager initialized: enabled={}, admissionControlOnly={}, updateGlobalAvgInterval={}s",
@@ -73,8 +76,17 @@ public class AdmissionControlManager {
      * @param enabled Whether admission control is enabled
      */
     public AdmissionControlManager(int totalSlots, int slowSlotPercentage, long idleTimeoutMs,
-                                     long slowSlotTimeoutMs, long fastSlotTimeoutMs, boolean enabled) {
-        this(totalSlots, slowSlotPercentage, idleTimeoutMs, slowSlotTimeoutMs, fastSlotTimeoutMs, 0L, enabled);
+                                      long slowSlotTimeoutMs, long fastSlotTimeoutMs, boolean enabled) {
+        this(totalSlots, slowSlotPercentage, idleTimeoutMs, slowSlotTimeoutMs, fastSlotTimeoutMs, 0L, 0, enabled);
+    }
+
+    /**
+     * Creates a new AdmissionControlManager with configured queue depth cap.
+     */
+    public AdmissionControlManager(int totalSlots, int slowSlotPercentage, long idleTimeoutMs,
+                                      long slowSlotTimeoutMs, long fastSlotTimeoutMs, long updateGlobalAvgIntervalSeconds, boolean enabled) {
+        this(totalSlots, slowSlotPercentage, idleTimeoutMs, slowSlotTimeoutMs, fastSlotTimeoutMs,
+                updateGlobalAvgIntervalSeconds, 0, enabled);
     }
 
     /**
@@ -101,7 +113,8 @@ public class AdmissionControlManager {
             try {
                 slotAcquired = slotManager.acquireFastSlot(fastSlotTimeoutMs);
                 if (!slotAcquired) {
-                    throw new RuntimeException("Timeout waiting for admission control slot for operation: " + operationHash);
+                    throw new ServerOverloadException(
+                            "Timeout waiting for admission control slot for operation: " + operationHash);
                 }
                 logger.debug("Acquired admission control slot for operation: {}", operationHash);
                 threadHeldSlot.set(new HeldSlot(false));
@@ -126,14 +139,16 @@ public class AdmissionControlManager {
             if (isSlowOperation) {
                 slotAcquired = slotManager.acquireSlowSlot(slowSlotTimeoutMs);
                 if (!slotAcquired) {
-                    throw new RuntimeException("Timeout waiting for slow operation slot for operation: " + operationHash);
+                    throw new ServerOverloadException(
+                            "Timeout waiting for slow operation slot for operation: " + operationHash);
                 }
                 logger.debug("Acquired slow slot for operation: {}", operationHash);
                 threadHeldSlot.set(new HeldSlot(true));
             } else {
                 slotAcquired = slotManager.acquireFastSlot(fastSlotTimeoutMs);
                 if (!slotAcquired) {
-                    throw new RuntimeException("Timeout waiting for fast operation slot for operation: " + operationHash);
+                    throw new ServerOverloadException(
+                            "Timeout waiting for fast operation slot for operation: " + operationHash);
                 }
                 logger.debug("Acquired fast slot for operation: {}", operationHash);
                 threadHeldSlot.set(new HeldSlot(false));

@@ -329,6 +329,16 @@ Timeout settings for acquiring slots provide backpressure when pools are exhaust
 For pooled lazy session allocation, OJP uses admission semaphores as the timeout owner and backend pool borrow is forced to fail fast. This avoids additive waits (admission wait + pool borrow wait) under saturation and keeps behavior consistent across XA and non-XA paths.
 When slow query segregation is enabled, `ojp.server.slowQuerySegregation.fastSlotTimeout` and `ojp.server.slowQuerySegregation.slowSlotTimeout` take precedence for fast/slow lane admission waits.
 
+Admission queue depth is also bounded to prevent unbounded waiter buildup under heavy surge traffic. Configure this with `ojp.server.admissionControl.maxQueueDepth` (default `0`, which auto-calculates as `totalSlots × 2` per semaphore, where `totalSlots` is the pool slot count used by admission control). This limit applies to **all** admission-control modes.
+
+```bash
+# Keep auto queue depth (recommended starting point)
+-Dojp.server.admissionControl.maxQueueDepth=0
+
+# Or set an explicit queue cap
+-Dojp.server.admissionControl.maxQueueDepth=128
+```
+
 **[IMAGE PROMPT: Create a dynamic allocation diagram showing how idle slots can be borrowed between pools. Show two pools: "Fast Slots" (4 boxes, 3 active, 1 idle) and "Slow Slots" (2 boxes, 1 active, 1 idle). Draw a curved arrow labeled "Temporary Borrow (if idle >10s)" from the idle slow slot to fast pool. Include a timer icon and "Returns when fast demand drops" annotation. Use green for active, gray for idle, and dotted lines for temporary borrowing. Style: Technical system diagram with clear state visualization.]**
 
 The classification algorithm adapts to your workload patterns over time. An operation that starts fast but becomes slow under load will gradually migrate to slow slot management. This dynamic behavior means you don't need to manually categorize your queries—the server learns from observation.
