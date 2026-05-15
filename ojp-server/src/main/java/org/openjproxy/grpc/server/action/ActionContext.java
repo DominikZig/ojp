@@ -7,7 +7,6 @@ import org.openjproxy.grpc.server.SessionManager;
 import org.openjproxy.grpc.server.CircuitBreakerRegistry;
 import org.openjproxy.grpc.server.ServerConfiguration;
 import org.openjproxy.grpc.server.AdmissionControlManager;
-import org.openjproxy.grpc.server.ConnectionAdmissionManager;
 import org.openjproxy.grpc.server.UnpooledConnectionDetails;
 import org.openjproxy.grpc.server.metrics.SqlStatementMetrics;
 import org.openjproxy.grpc.server.sql.SqlEnhancerEngine;
@@ -76,7 +75,6 @@ public class ActionContext {
      * Value: manager for this datasource
      */
     private final Map<String, AdmissionControlManager> admissionControlManagers;
-    private final Map<String, ConnectionAdmissionManager> connectionAdmissionManagers;
 
     /**
      * Map of connection hash to CacheConfiguration.
@@ -149,7 +147,6 @@ public class ActionContext {
             Map<String, UnpooledConnectionDetails> unpooledConnectionDetailsMap,
             Map<String, DbName> dbNameMap,
             Map<String, AdmissionControlManager> admissionControlManagers,
-            Map<String, ConnectionAdmissionManager> connectionAdmissionManagers,
             Map<String, org.openjproxy.grpc.server.cache.CacheConfiguration> cacheConfigurationMap,
             XAConnectionPoolProvider xaPoolProvider,
             MultinodeXaCoordinator xaCoordinator,
@@ -165,7 +162,6 @@ public class ActionContext {
         this.unpooledConnectionDetailsMap = unpooledConnectionDetailsMap;
         this.dbNameMap = dbNameMap;
         this.admissionControlManagers = admissionControlManagers;
-        this.connectionAdmissionManagers = connectionAdmissionManagers;
         this.cacheConfigurationMap = cacheConfigurationMap;
         this.xaPoolProvider = xaPoolProvider;
         this.xaCoordinator = xaCoordinator;
@@ -201,10 +197,6 @@ public class ActionContext {
 
     public Map<String, AdmissionControlManager> getAdmissionControlManagers() {
         return admissionControlManagers;
-    }
-
-    public Map<String, ConnectionAdmissionManager> getConnectionAdmissionManagers() {
-        return connectionAdmissionManagers;
     }
 
     public Map<String, org.openjproxy.grpc.server.cache.CacheConfiguration> getCacheConfigurationMap() {

@@ -82,8 +82,6 @@ public class StatementServiceImpl extends StatementServiceGrpc.StatementServiceI
         Map<String, DbName> dbNameMap = new ConcurrentHashMap<>();
         // Per-datasource admission control managers
         Map<String, AdmissionControlManager> admissionControlManagers = new ConcurrentHashMap<>();
-        // Per-datasource connection-admission managers (session-scoped permits)
-        Map<String, ConnectionAdmissionManager> connectionAdmissionManagers = new ConcurrentHashMap<>();
         // Per-datasource cache configurations (shared with SessionManager)
         Map<String, org.openjproxy.grpc.server.cache.CacheConfiguration> cacheCfgMap =
                 cacheConfigurationMap != null ? cacheConfigurationMap : new ConcurrentHashMap<>();
@@ -95,7 +93,6 @@ public class StatementServiceImpl extends StatementServiceGrpc.StatementServiceI
                 unpooledConnectionDetailsMap,
                 dbNameMap,
                 admissionControlManagers,
-                connectionAdmissionManagers,
                 cacheCfgMap,
                 xaPoolProvider,
                 XA_COORDINATOR,

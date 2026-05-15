@@ -60,7 +60,6 @@ class ConnectActionConcurrencyTest {
                 new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(),
-                new ConcurrentHashMap<>(),
                 mock(XAConnectionPoolProvider.class),
                 new MultinodeXaCoordinator(),
                 new ClusterHealthTracker(),
@@ -133,7 +132,6 @@ class ConnectActionConcurrencyTest {
 
         ActionContext context = new ActionContext(
                 datasourceMap,
-                new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(),
                 new ConcurrentHashMap<>(),

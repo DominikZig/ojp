@@ -2,7 +2,6 @@ package org.openjproxy.grpc.server.action.connection;
 
 import lombok.extern.slf4j.Slf4j;
 import org.openjproxy.grpc.server.AdmissionControlManager;
-import org.openjproxy.grpc.server.ConnectionAdmissionManager;
 import org.openjproxy.grpc.server.action.ActionContext;
 
 /**
@@ -49,12 +48,6 @@ public class CreateSlowQuerySegregationManagerAction {
      * @param admissionTimeoutMillis The timeout budget for admission-control semaphores in milliseconds
      */
     public void execute(ActionContext context, String connHash, int actualPoolSize, boolean isXA, long admissionTimeoutMillis) {
-        ConnectionAdmissionManager connectionAdmissionManager =
-                new ConnectionAdmissionManager(actualPoolSize, admissionTimeoutMillis);
-        context.getConnectionAdmissionManagers().put(connHash, connectionAdmissionManager);
-        log.info("Created ConnectionAdmissionManager for datasource {} with slots {} and timeout {}ms",
-                connHash, actualPoolSize, admissionTimeoutMillis);
-
         boolean slowQueryEnabled = context.getServerConfiguration().isSlowQuerySegregationEnabled();
 
         if (isXA) {

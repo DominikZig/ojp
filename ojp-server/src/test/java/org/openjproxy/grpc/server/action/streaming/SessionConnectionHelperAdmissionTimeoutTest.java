@@ -59,8 +59,6 @@ class SessionConnectionHelperAdmissionTimeoutTest {
         Map<String, UnpooledConnectionDetails> unpooledConnectionDetailsMap = new ConcurrentHashMap<>();
         Map<String, com.openjproxy.grpc.DbName> dbNameMap = new ConcurrentHashMap<>();
         Map<String, AdmissionControlManager> admissionControlManagers = new ConcurrentHashMap<>();
-        Map<String, org.openjproxy.grpc.server.ConnectionAdmissionManager> connectionAdmissionManagers =
-                new ConcurrentHashMap<>();
 
         return new ActionContext(
                 datasourceMap,
@@ -69,7 +67,6 @@ class SessionConnectionHelperAdmissionTimeoutTest {
                 unpooledConnectionDetailsMap,
                 dbNameMap,
                 admissionControlManagers,
-                connectionAdmissionManagers,
                 new ConcurrentHashMap<>(),
                 mock(XAConnectionPoolProvider.class),
                 new MultinodeXaCoordinator(),

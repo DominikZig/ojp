@@ -29,6 +29,7 @@ public class AdmissionControlManager {
     private final boolean admissionControlOnly;
     private final long slowSlotTimeoutMs;
     private final long fastSlotTimeoutMs;
+    private final ThreadLocal<HeldSlot> threadHeldSlot = new ThreadLocal<>();
 
     /**
      * Creates a new AdmissionControlManager.
@@ -103,12 +104,15 @@ public class AdmissionControlManager {
                     throw new RuntimeException("Timeout waiting for admission control slot for operation: " + operationHash);
                 }
                 logger.debug("Acquired admission control slot for operation: {}", operationHash);
+                threadHeldSlot.set(new HeldSlot(false));
                 return executeAndMonitor(operationHash, sql, operation);
             } finally {
-                if (slotAcquired) {
+                HeldSlot heldSlot = threadHeldSlot.get();
+                if (slotAcquired && (heldSlot == null || !heldSlot.claimed)) {
                     slotManager.releaseFastSlot();
                     logger.debug("Released admission control slot for operation: {}", operationHash);
                 }
+                threadHeldSlot.remove();
             }
         }
 
@@ -125,12 +129,14 @@ public class AdmissionControlManager {
                     throw new RuntimeException("Timeout waiting for slow operation slot for operation: " + operationHash);
                 }
                 logger.debug("Acquired slow slot for operation: {}", operationHash);
+                threadHeldSlot.set(new HeldSlot(true));
             } else {
                 slotAcquired = slotManager.acquireFastSlot(fastSlotTimeoutMs);
                 if (!slotAcquired) {
                     throw new RuntimeException("Timeout waiting for fast operation slot for operation: " + operationHash);
                 }
                 logger.debug("Acquired fast slot for operation: {}", operationHash);
+                threadHeldSlot.set(new HeldSlot(false));
             }
 
             // Execute the operation and monitor its performance
@@ -138,7 +144,8 @@ public class AdmissionControlManager {
 
         } finally {
             // Always release the slot
-            if (slotAcquired) {
+            HeldSlot heldSlot = threadHeldSlot.get();
+            if (slotAcquired && (heldSlot == null || !heldSlot.claimed)) {
                 if (isSlowOperation) {
                     slotManager.releaseSlowSlot();
                     logger.debug("Released slow slot for operation: {}", operationHash);
@@ -147,6 +154,47 @@ public class AdmissionControlManager {
                     logger.debug("Released fast slot for operation: {}", operationHash);
                 }
             }
+            threadHeldSlot.remove();
+        }
+    }
+
+    /**
+     * Claims the slot currently held by this thread (acquired inside executeWithSegregation)
+     * and converts it into a session-scoped permit that must be released on session termination.
+     *
+     * @return a claimed session permit, or null if current thread does not hold a slot.
+     */
+    public SessionPermit claimCurrentThreadPermitForSession() {
+        if (!enabled || slotManager == null) {
+            return null;
+        }
+        HeldSlot heldSlot = threadHeldSlot.get();
+        if (heldSlot == null || heldSlot.claimed) {
+            return null;
+        }
+        heldSlot.claimed = true;
+        return new SessionPermit(slotManager, heldSlot.slow);
+    }
+
+    /**
+     * Acquires a session-scoped admission permit using the existing fast-slot semaphore.
+     * Used when no statement-scoped slot is currently held by this thread.
+     */
+    public SessionPermit acquireSessionPermit(String connHash) throws java.sql.SQLException {
+        if (!enabled || slotManager == null) {
+            return null;
+        }
+        try {
+            boolean acquired = slotManager.acquireFastSlot(fastSlotTimeoutMs);
+            if (!acquired) {
+                throw new java.sql.SQLException(String.format(
+                        "Connection admission timeout for hash: %s after %dms (phase=admission)",
+                        connHash, fastSlotTimeoutMs));
+            }
+            return new SessionPermit(slotManager, false);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new java.sql.SQLException("Interrupted while waiting for admission slot", e);
         }
     }
 
@@ -260,5 +308,36 @@ public class AdmissionControlManager {
     @FunctionalInterface
     public interface SegregatedOperation<T> {
         T execute() throws Exception;
+    }
+
+    private static final class HeldSlot {
+        private final boolean slow;
+        private boolean claimed;
+
+        private HeldSlot(boolean slow) {
+            this.slow = slow;
+            this.claimed = false;
+        }
+    }
+
+    public static final class SessionPermit {
+        private final SlotManager slotManager;
+        private final boolean slow;
+        private final java.util.concurrent.atomic.AtomicBoolean released = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        private SessionPermit(SlotManager slotManager, boolean slow) {
+            this.slotManager = slotManager;
+            this.slow = slow;
+        }
+
+        public void release() {
+            if (released.compareAndSet(false, true)) {
+                if (slow) {
+                    slotManager.releaseSlowSlot();
+                } else {
+                    slotManager.releaseFastSlot();
+                }
+            }
+        }
     }
 }

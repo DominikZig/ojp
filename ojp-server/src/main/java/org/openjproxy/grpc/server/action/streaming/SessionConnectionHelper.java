@@ -4,8 +4,8 @@ import com.openjproxy.grpc.SessionInfo;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.openjproxy.database.DatabaseUtils;
+import org.openjproxy.grpc.server.AdmissionControlManager;
 import org.openjproxy.grpc.server.ConnectionAcquisitionManager;
-import org.openjproxy.grpc.server.ConnectionAdmissionManager;
 import org.openjproxy.grpc.server.ConnectionSessionDTO;
 import org.openjproxy.grpc.server.PoolNotFoundException;
 import org.openjproxy.grpc.server.Session;
@@ -172,12 +172,15 @@ public class SessionConnectionHelper {
                         throw new PoolNotFoundException(connHash);
                     }
 
-                    ConnectionAdmissionManager.ConnectionPermit connectionPermit = null;
+                    AdmissionControlManager.SessionPermit sessionPermit = null;
                     try {
-                        ConnectionAdmissionManager connectionAdmissionManager =
-                                context.getConnectionAdmissionManagers().get(connHash);
-                        if (startSessionIfNone && connectionAdmissionManager != null) {
-                            connectionPermit = connectionAdmissionManager.acquirePermit(connHash);
+                        AdmissionControlManager admissionControlManager =
+                                context.getAdmissionControlManagers().get(connHash);
+                        if (startSessionIfNone && admissionControlManager != null) {
+                            sessionPermit = admissionControlManager.claimCurrentThreadPermitForSession();
+                            if (sessionPermit == null) {
+                                sessionPermit = admissionControlManager.acquireSessionPermit(connHash);
+                            }
                         }
 
                         // Use enhanced connection acquisition with timeout protection
@@ -186,23 +189,23 @@ public class SessionConnectionHelper {
 
                         if (startSessionIfNone) {
                             SessionInfo updatedSession = sessionManager.createSession(sessionInfo.getClientUUID(), conn);
-                            if (connectionPermit != null) {
+                            if (sessionPermit != null) {
                                 Session createdSession = sessionManager.getSession(updatedSession);
                                 if (createdSession != null) {
-                                    ConnectionAdmissionManager.ConnectionPermit permitForHook = connectionPermit;
+                                    AdmissionControlManager.SessionPermit permitForHook = sessionPermit;
                                     createdSession.setConnectionPermitReleaseHook(permitForHook::release);
-                                    connectionPermit = null;
+                                    sessionPermit = null;
                                 } else {
-                                    connectionPermit.release();
-                                    connectionPermit = null;
+                                    sessionPermit.release();
+                                    sessionPermit = null;
                                 }
                             }
                             dtoBuilder.session(updatedSession);
                             sessionCreated = true;
                         }
                     } catch (SQLException e) {
-                        if (connectionPermit != null) {
-                            connectionPermit.release();
+                        if (sessionPermit != null) {
+                            sessionPermit.release();
                         }
                         log.error("Failed to acquire connection from pool for hash: {}. Error: {}",
                                 connHash, e.getMessage());
