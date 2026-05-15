@@ -259,11 +259,6 @@ class AdmissionControlManagerTest {
     @Test
     void testAdmissionControlTimeoutThrowsServerOverloadException() throws Exception {
         AdmissionControlManager manager = new AdmissionControlManager(1, 0, 0, 0, 10, 0, 0, true);
-        manager.executeWithSegregation("hold-slot", () -> {
-            Thread.sleep(100); //NOSONAR
-            return "done";
-        });
-
         manager.getSlotManager().acquireFastSlot(1000);
         ServerOverloadException overloadException = assertThrows(ServerOverloadException.class,
                 () -> manager.executeWithSegregation("overload-op", () -> "never"));

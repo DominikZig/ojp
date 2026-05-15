@@ -116,6 +116,7 @@ public class ServerConfiguration {
     public static final long DEFAULT_SLOW_QUERY_FAST_SLOT_TIMEOUT = 60000; // 60 seconds fast slot timeout
     public static final long DEFAULT_SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL = 300; // 300 seconds (5 minutes) global average update interval
     public static final int DEFAULT_SLOW_QUERY_MAX_QUEUE_DEPTH = 0; // 0 means auto-calculate from total slots
+    public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 200;
     public static final String DEFAULT_DRIVERS_PATH = "./ojp-libs"; // Default external libraries directory path
 
     // SQL Enhancer default values
@@ -277,7 +278,7 @@ public class ServerConfiguration {
         this.slowQueryFastSlotTimeout = getLongProperty(SLOW_QUERY_FAST_SLOT_TIMEOUT_KEY, DEFAULT_SLOW_QUERY_FAST_SLOT_TIMEOUT);
         this.slowQueryUpdateGlobalAvgInterval = getLongProperty(SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL_KEY, DEFAULT_SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL);
         this.slowQueryMaxQueueDepth = getNonNegativeIntProperty(SLOW_QUERY_MAX_QUEUE_DEPTH_KEY, DEFAULT_SLOW_QUERY_MAX_QUEUE_DEPTH);
-        this.maxConcurrentRequests = getNonNegativeIntProperty(MAX_CONCURRENT_REQUESTS_KEY, threadPoolSize);
+        this.maxConcurrentRequests = getNonNegativeIntProperty(MAX_CONCURRENT_REQUESTS_KEY, DEFAULT_MAX_CONCURRENT_REQUESTS);
         this.driversPath = getStringProperty(DRIVERS_PATH_KEY, DEFAULT_DRIVERS_PATH);
         this.sqlEnhancerEnabled = getBooleanProperty(SQL_ENHANCER_ENABLED_KEY, DEFAULT_SQL_ENHANCER_ENABLED);
         this.sqlEnhancerMode = getStringProperty(SQL_ENHANCER_MODE_KEY, DEFAULT_SQL_ENHANCER_MODE);

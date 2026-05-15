@@ -3,6 +3,9 @@ package org.openjproxy.grpc.server;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -193,30 +196,32 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
     @Test
     void testQueueDepthLimitFailsFastForWaitingRequests() throws InterruptedException {
-        SlotManager singleSlotManager = new SlotManager(1, 0, 100, 0);
-        assertEquals(2, singleSlotManager.getMaxWaitQueueDepth());
+        SlotManager singleSlotManager = new SlotManager(1, 0, 100, 1);
+        assertEquals(1, singleSlotManager.getMaxWaitQueueDepth());
         assertTrue(singleSlotManager.acquireFastSlot(1000));
 
-        Thread[] waitingThreads = new Thread[2];
-        for (int i = 0; i < waitingThreads.length; i++) {
-            waitingThreads[i] = new Thread(() -> {
-                try {
-                    singleSlotManager.acquireFastSlot(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            });
-            waitingThreads[i].start();
-        }
+        CountDownLatch waiterStarted = new CountDownLatch(1);
+        Thread waitingThread = new Thread(() -> {
+            waiterStarted.countDown();
+            try {
+                singleSlotManager.acquireFastSlot(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        waitingThread.start();
 
-        Thread.sleep(100); //NOSONAR
+        assertTrue(waiterStarted.await(1, TimeUnit.SECONDS));
+        long waitStart = System.nanoTime();
+        while (waitingThread.getState() != Thread.State.TIMED_WAITING
+                && TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waitStart) < 1000) {
+            Thread.yield(); //NOSONAR - test-only spin wait to observe waiter state before fail-fast assertion
+        }
 
         assertFalse(singleSlotManager.acquireFastSlot(1000));
 
         singleSlotManager.releaseFastSlot();
-        for (Thread waitingThread : waitingThreads) {
-            waitingThread.join();
-        }
+        waitingThread.join();
     }
 
     @Test

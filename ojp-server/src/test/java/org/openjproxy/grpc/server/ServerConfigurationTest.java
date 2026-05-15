@@ -52,7 +52,7 @@ class ServerConfigurationTest {
         assertEquals(ServerConfiguration.DEFAULT_CONNECTION_IDLE_TIMEOUT, config.getConnectionIdleTimeout());
         assertEquals(ServerConfiguration.DEFAULT_PROMETHEUS_ALLOWED_IPS, config.getPrometheusAllowedIps());
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_TIMEOUT, config.getCircuitBreakerTimeout());
-        assertEquals(ServerConfiguration.DEFAULT_THREAD_POOL_SIZE, config.getMaxConcurrentRequests());
+        assertEquals(ServerConfiguration.DEFAULT_MAX_CONCURRENT_REQUESTS, config.getMaxConcurrentRequests());
         assertEquals(ServerConfiguration.DEFAULT_SLOW_QUERY_MAX_QUEUE_DEPTH, config.getSlowQueryMaxQueueDepth());
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_THRESHOLD, config.getCircuitBreakerThreshold());
         assertEquals(ServerConfiguration.DEFAULT_DRIVERS_PATH, config.getDriversPath());
@@ -122,7 +122,7 @@ class ServerConfigurationTest {
         assertEquals(ServerConfiguration.DEFAULT_SERVER_PORT, config.getServerPort());
         assertEquals(ServerConfiguration.DEFAULT_PROMETHEUS_PORT, config.getPrometheusPort());
         assertEquals(ServerConfiguration.DEFAULT_THREAD_POOL_SIZE, config.getThreadPoolSize());
-        assertEquals(ServerConfiguration.DEFAULT_THREAD_POOL_SIZE, config.getMaxConcurrentRequests());
+        assertEquals(ServerConfiguration.DEFAULT_MAX_CONCURRENT_REQUESTS, config.getMaxConcurrentRequests());
         assertEquals(ServerConfiguration.DEFAULT_SLOW_QUERY_MAX_QUEUE_DEPTH, config.getSlowQueryMaxQueueDepth());
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_THRESHOLD, config.getCircuitBreakerThreshold());
         assertEquals(ServerConfiguration.DEFAULT_STATEMENT_CACHE_MAX_SIZE, config.getStatementCacheMaxSize());

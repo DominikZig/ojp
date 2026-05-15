@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class ConcurrencyThrottleInterceptor implements ServerInterceptor {
 
-    private final AtomicInteger inFlightRequests = new AtomicInteger(0);
+    private final AtomicInteger currentInFlightRequests = new AtomicInteger(0);
     private final int maxConcurrentRequests;
 
     public ConcurrencyThrottleInterceptor(int maxConcurrentRequests) {
@@ -32,9 +32,9 @@ public class ConcurrencyThrottleInterceptor implements ServerInterceptor {
             return next.startCall(call, headers);
         }
 
-        int currentInFlight = inFlightRequests.incrementAndGet();
+        int currentInFlight = currentInFlightRequests.incrementAndGet();
         if (currentInFlight > maxConcurrentRequests) {
-            inFlightRequests.decrementAndGet();
+            currentInFlightRequests.decrementAndGet();
             String methodName = call.getMethodDescriptor().getFullMethodName();
             log.warn("Request rejected due to concurrency limit: method={}, inFlight={}, maxConcurrentRequests={}",
                     methodName, currentInFlight, maxConcurrentRequests);
@@ -64,11 +64,14 @@ public class ConcurrencyThrottleInterceptor implements ServerInterceptor {
 
     private void releaseRequestCounter(AtomicBoolean requestReleased) {
         if (requestReleased.compareAndSet(false, true)) {
-            inFlightRequests.decrementAndGet();
+            currentInFlightRequests.decrementAndGet();
         }
     }
 
+    /**
+     * Exposed for tests to validate in-flight accounting.
+     */
     int getCurrentInFlightRequests() {
-        return inFlightRequests.get();
+        return currentInFlightRequests.get();
     }
 }
