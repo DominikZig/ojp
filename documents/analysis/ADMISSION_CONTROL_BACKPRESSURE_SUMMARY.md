@@ -71,7 +71,7 @@ For pooled session creation, OJP reuses the same admission semaphores.
 | `ojp.server.slowQuerySegregation.idleTimeout` | How long one lane must stay idle before the other lane can borrow its slots |
 | `ojp.server.slowQuerySegregation.fastSlotTimeout` | Fast-lane wait budget when slow query segregation is enabled |
 | `ojp.server.slowQuerySegregation.slowSlotTimeout` | Slow-lane wait budget when slow query segregation is enabled |
-| `ojp.server.admissionControl.maxQueueDepth` | Max number of waiters before OJP rejects new work immediately (`0` = auto, `totalSlots × 2` per semaphore) |
+| `ojp.server.admissionControl.maxQueueDepth` | Max number of waiters before OJP rejects new work immediately (`0` = auto, `totalSlots x 2` per semaphore) |
 | `ojp.connection.pool.connectionTimeout` | Admission wait budget when slow query segregation is off; also the fallback admission budget for pooled non-XA setup |
 | `ojp.xa.connection.pool.connectionTimeout` | Same idea as above, but for XA pooled admission |
 
