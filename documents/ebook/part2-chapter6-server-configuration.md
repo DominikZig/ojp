@@ -326,7 +326,7 @@ The idle timeout setting controls when slots can borrow from the other pool. If 
 
 Timeout settings for acquiring slots provide backpressure when pools are exhausted. Fast operations wait up to 60 seconds by default, while slow operations get more generous 120-second timeouts. These asymmetric timeouts reflect the different expectations: fast operations should complete quickly or fail, while slow operations naturally take longer and deserve more patience.
 
-Admission queue depth is also bounded to prevent unbounded waiter buildup under heavy surge traffic. Configure this with `ojp.server.admissionControl.maxQueueDepth` (default `0`, which auto-calculates from total slots). This limit applies to **all** admission-control modes.
+Admission queue depth is also bounded to prevent unbounded waiter buildup under heavy surge traffic. Configure this with `ojp.server.admissionControl.maxQueueDepth` (default `0`, which auto-calculates as `totalSlots × 2` per semaphore, where `totalSlots` is the pool slot count used by admission control). This limit applies to **all** admission-control modes.
 
 ```bash
 # Keep auto queue depth (recommended starting point)
