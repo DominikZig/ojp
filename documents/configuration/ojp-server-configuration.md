@@ -454,6 +454,14 @@ ojp.server.slowQuerySegregation.fastSlotTimeout=60000
 - **Adaptive learning**: Automatically discovers and adapts to slow operations per datasource
 - **Efficient resource utilization**: Smart slot borrowing maximizes connection pool usage while maintaining safety
 
+### Admission Timeout Model (Pooled Lazy Sessions)
+
+OJP uses a single timeout owner for pooled lazy session allocation: the admission semaphore.
+
+- `ojp.connection.pool.connectionTimeout` (non-XA) and `ojp.xa.connection.pool.connectionTimeout` (XA) define the admission wait budget.
+- Backend pool borrow is configured fail-fast after admission.
+- This prevents additive latency under contention (admission wait + pool borrow wait), and keeps timeout semantics consistent across XA, non-XA, and slow-query segregation paths.
+
 ## Configuration Examples
 
 ### Development Environment
