@@ -172,8 +172,8 @@ Controls how the server batches rows into gRPC streaming messages when returning
 | `ojp.server.slowQuerySegregation.enabled`         | `OJP_SERVER_SLOWQUERYSEGREGATION_ENABLED`         | boolean | false    | Enable for mixed fast+slow workloads; usually keep off for pure OLTP/OLAP | 0.2.0-beta |
 | `ojp.server.slowQuerySegregation.slowSlotPercentage` | `OJP_SERVER_SLOWQUERYSEGREGATION_SLOWSLOTPERCENTAGE` | int     | 20       | Percentage of slots for slow operations (0-100) | 0.2.0-beta |
 | `ojp.server.slowQuerySegregation.idleTimeout`     | `OJP_SERVER_SLOWQUERYSEGREGATION_IDLETIMEOUT`     | long    | 10000    | Idle timeout for slot borrowing (milliseconds)  | 0.2.0-beta |
-| `ojp.server.slowQuerySegregation.slowSlotTimeout` | `OJP_SERVER_SLOWQUERYSEGREGATION_SLOWSLOTTIMEOUT` | long    | 120000   | Timeout for acquiring slow operation slots (ms) | 0.2.0-beta |
-| `ojp.server.slowQuerySegregation.fastSlotTimeout` | `OJP_SERVER_SLOWQUERYSEGREGATION_FASTSLOTTIMEOUT` | long    | 60000    | Timeout for acquiring fast operation slots (ms) | 0.2.0-beta |
+| `ojp.server.slowQuerySegregation.slowSlotTimeout` | `OJP_SERVER_SLOWQUERYSEGREGATION_SLOWSLOTTIMEOUT` | long    | 120000   | Legacy lane-timeout key. Pooled lazy session admission now uses `connectionTimeout` budget. | 0.2.0-beta |
+| `ojp.server.slowQuerySegregation.fastSlotTimeout` | `OJP_SERVER_SLOWQUERYSEGREGATION_FASTSLOTTIMEOUT` | long    | 60000    | Legacy lane-timeout key. Pooled lazy session admission now uses `connectionTimeout` budget. | 0.2.0-beta |
 
 ### SQL Enhancer and Schema Loader Settings
 
@@ -462,6 +462,7 @@ OJP uses a single timeout owner for pooled lazy session allocation: the admissio
 - Backend pool borrow is configured fail-fast after admission.
 - This prevents additive latency under contention (admission wait + pool borrow wait), and keeps timeout semantics consistent across XA, non-XA, and slow-query segregation paths.
 - With slow query segregation enabled, operations are still routed to fast/slow slot lanes for isolation, but pooled lazy session admission now uses the same single timeout budget model.
+- `ojp.server.slowQuerySegregation.fastSlotTimeout` and `ojp.server.slowQuerySegregation.slowSlotTimeout` are kept for backward compatibility but do not override this pooled lazy admission budget.
 
 ## Configuration Examples
 
