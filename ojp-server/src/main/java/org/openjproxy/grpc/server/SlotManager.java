@@ -40,6 +40,10 @@ public class SlotManager {
     private final AtomicLong lastSlowActivity = new AtomicLong(0);
     private final AtomicLong lastFastActivity = new AtomicLong(0);
 
+    // AIMD peak tracking
+    private final AtomicInteger observedPeak = new AtomicInteger(0);
+    private final AtomicLong releaseCount = new AtomicLong(0);
+
     // Configuration
     private final AtomicBoolean enabled = new AtomicBoolean(true);
 
@@ -139,6 +143,7 @@ public class SlotManager {
         }
 
         log.debug("Failed to acquire slow slot within {}ms timeout", timeoutMs);
+        recordAdmissionTimeout();
         return false;
     }
 
@@ -188,6 +193,7 @@ public class SlotManager {
         }
 
         log.debug("Failed to acquire fast slot within {}ms timeout", timeoutMs);
+        recordAdmissionTimeout();
         return false;
     }
 
@@ -213,6 +219,7 @@ public class SlotManager {
             slowOperationSemaphore.release();
             log.debug("Released slow slot back to slow pool. Active slow: {}", activeSlowOperations.get());
         }
+        tickAimdRecovery();
     }
 
     /**
@@ -237,6 +244,7 @@ public class SlotManager {
             fastOperationSemaphore.release();
             log.debug("Released fast slot back to fast pool. Active fast: {}", activeFastOperations.get());
         }
+        tickAimdRecovery();
     }
 
     /**
@@ -279,6 +287,23 @@ public class SlotManager {
 
     private boolean canWaitForSlot(Semaphore semaphore) {
         return semaphore.getQueueLength() < maxWaitQueueDepth;
+    }
+
+    private void recordAdmissionTimeout() {
+        int currentActive = activeFastOperations.get() + activeSlowOperations.get();
+        int floor = Math.max(1, (int) (totalSlots * 0.1));
+        // Multiplicative decrease: clamp peak down to currentActive (observed saturation point).
+        // On first timeout (cur == 0), start from totalSlots so the peak is valid for AIMD.
+        observedPeak.updateAndGet(cur -> Math.max(floor, Math.min(cur == 0 ? totalSlots : cur, currentActive)));
+    }
+
+    private void tickAimdRecovery() {
+        long count = releaseCount.incrementAndGet();
+        long period = Math.max(1L, (long) totalSlots * 2);
+        // Additive increase: nudge the peak up by 1 every `period` releases once saturation eases.
+        if (count % period == 0) {
+            observedPeak.updateAndGet(cur -> (cur > 0 && cur < totalSlots) ? cur + 1 : cur);
+        }
     }
 
     /**
@@ -328,4 +353,5 @@ public class SlotManager {
     public int getFastSlotsBorrowedToSlow() { return fastSlotsBorrowedToSlow.get(); }
     public long getIdleTimeoutMs() { return idleTimeoutMs; }
     public int getMaxWaitQueueDepth() { return maxWaitQueueDepth; }
+    public int getObservedPeak() { return observedPeak.get(); }
 }

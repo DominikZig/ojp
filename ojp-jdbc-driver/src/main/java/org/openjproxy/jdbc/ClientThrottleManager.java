@@ -1,0 +1,161 @@
+package org.openjproxy.jdbc;
+
+import com.openjproxy.grpc.SessionInfo;
+import lombok.extern.slf4j.Slf4j;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * Per-connHash, per-node client-side throttle.
+ * Prevents this JVM from sending more concurrent requests to one OJP node than its fair share.
+ *
+ * Mechanism: fail-fast AtomicInteger counter (no blocking, no semaphore).
+ * Limit updates are a single volatile write; AIMD increase capped at +1 per SessionInfo update.
+ */
+@Slf4j
+public class ClientThrottleManager {
+
+    private final AtomicInteger inFlight = new AtomicInteger(0);
+    private volatile int proactiveLimit = Integer.MAX_VALUE;
+    private volatile int reactiveLimit = Integer.MAX_VALUE;
+    private volatile int lastProactiveLimit = Integer.MAX_VALUE;
+    private volatile int lastReactiveLimit = Integer.MAX_VALUE;
+
+    /**
+     * Update limits from a fresh SessionInfo.
+     * AIMD: decrease immediately; increase capped at currentLimit + 1.
+     */
+    public void updateFromSessionInfo(SessionInfo sessionInfo) {
+        int clientCount = Math.max(1, sessionInfo.getClientCount());
+        int maxAdmission = sessionInfo.getMaxAdmission();
+        int observedPeak = sessionInfo.getObservedPeak();
+
+        int numOjpServers = countUpServers(sessionInfo.getClusterHealth());
+
+        if (maxAdmission > 0) {
+            int rawProactive = (int) Math.min(Integer.MAX_VALUE,
+                    (long) Math.ceil((double) maxAdmission / clientCount) * numOjpServers);
+            int newProactive = (int) (rawProactive * 0.9);
+            if (newProactive < 1) {
+                newProactive = 1;
+            }
+            if (newProactive < lastProactiveLimit) {
+                proactiveLimit = newProactive;
+            } else if (newProactive > lastProactiveLimit) {
+                proactiveLimit = lastProactiveLimit + 1;
+            }
+            lastProactiveLimit = proactiveLimit;
+        }
+
+        if (observedPeak > 0 && maxAdmission > 0) {
+            int rawReactive = (int) Math.min(Integer.MAX_VALUE,
+                    (long) Math.ceil((double) observedPeak / clientCount) * numOjpServers);
+            int newReactive = (int) (rawReactive * 0.9);
+            if (newReactive < 1) {
+                newReactive = 1;
+            }
+            if (newReactive < lastReactiveLimit) {
+                reactiveLimit = newReactive;
+            } else if (newReactive > lastReactiveLimit) {
+                reactiveLimit = lastReactiveLimit + 1;
+            }
+            lastReactiveLimit = reactiveLimit;
+        } else {
+            reactiveLimit = Integer.MAX_VALUE;
+            lastReactiveLimit = Integer.MAX_VALUE;
+        }
+
+        log.debug("ClientThrottleManager updated: proactiveLimit={}, reactiveLimit={}, clientCount={}, maxAdmission={}, observedPeak={}, numServers={}",
+                proactiveLimit, reactiveLimit, clientCount, maxAdmission, observedPeak, numOjpServers);
+    }
+
+    /**
+     * Count UP servers from clusterHealth string "host1:port1(UP);host2:port2(DOWN);..."
+     * Returns 1 if clusterHealth is empty/null.
+     */
+    private int countUpServers(String clusterHealth) {
+        if (clusterHealth == null || clusterHealth.isEmpty()) {
+            return 1;
+        }
+        int count = 0;
+        for (String entry : clusterHealth.split(";")) {
+            if (entry.contains("(UP)")) {
+                count++;
+            }
+        }
+        return count > 0 ? count : 1;
+    }
+
+    /**
+     * Attempt to acquire a throttle slot.
+     *
+     * @param mode the configured throttle mode
+     * @param inTransaction whether this connection is currently in a transaction (autoCommit=false)
+     * @return true if the request should proceed, false if it should be rejected
+     */
+    public boolean tryAcquire(ClientThrottleMode mode, boolean inTransaction) {
+        if (mode == ClientThrottleMode.OFF) {
+            return true;
+        }
+        if (inTransaction) {
+            return true;
+        }
+
+        int effectiveLimit = getEffectiveLimit(mode);
+        if (effectiveLimit == Integer.MAX_VALUE) {
+            return true;
+        }
+
+        int current = inFlight.get();
+        if (current >= effectiveLimit) {
+            log.debug("Client throttle rejected: inFlight={}, effectiveLimit={}, mode={}", current, effectiveLimit, mode);
+            return false;
+        }
+        // CAS loop: atomically check-and-increment to avoid exceeding the limit due to races
+        while (true) {
+            int cur = inFlight.get();
+            if (cur >= effectiveLimit) {
+                log.debug("Client throttle rejected (CAS): inFlight={}, effectiveLimit={}, mode={}", cur, effectiveLimit, mode);
+                return false;
+            }
+            if (inFlight.compareAndSet(cur, cur + 1)) {
+                return true;
+            }
+        }
+    }
+
+    /**
+     * Release a previously acquired slot. Must be called after tryAcquire returned true.
+     */
+    public void release(ClientThrottleMode mode, boolean inTransaction) {
+        if (mode == ClientThrottleMode.OFF || inTransaction) {
+            return;
+        }
+        // Atomically clamp to 0 to handle any race in concurrent releases
+        inFlight.updateAndGet(v -> Math.max(0, v - 1));
+    }
+
+    private int getEffectiveLimit(ClientThrottleMode mode) {
+        switch (mode) {
+            case PROACTIVE: return proactiveLimit;
+            case REACTIVE: return reactiveLimit;
+            case COMBINED:
+                int pl = proactiveLimit;
+                int rl = reactiveLimit;
+                return Math.min(pl, rl);
+            default: return Integer.MAX_VALUE;
+        }
+    }
+
+    public int getInFlight() {
+        return inFlight.get();
+    }
+
+    public int getProactiveLimit() {
+        return proactiveLimit;
+    }
+
+    public int getReactiveLimit() {
+        return reactiveLimit;
+    }
+}

@@ -67,19 +67,43 @@ public class Statement implements java.sql.Statement {
     public ResultSet executeQuery(String sql) throws SQLException {
         log.debug("executeQuery: {}", sql);
         checkClosed();
-        Iterator<OpResult> itResults = this.statementService.executeQuery(this.connection.getSession(), sql,
-                EMPTY_PARAMETERS_LIST, this.statementUUID, this.properties);
-        return new ResultSet(itResults, this.statementService, this);
+        ClientThrottleManager throttle = this.connection.getThrottleManager();
+        ClientThrottleMode mode = this.connection.getThrottleMode();
+        boolean inTransaction = !this.connection.getAutoCommit();
+        if (throttle != null && !throttle.tryAcquire(mode, inTransaction)) {
+            throw new java.sql.SQLTransientException("Client throttle limit reached; request rejected to protect OJP server");
+        }
+        try {
+            Iterator<OpResult> itResults = this.statementService.executeQuery(this.connection.getSession(), sql,
+                    EMPTY_PARAMETERS_LIST, this.statementUUID, this.properties);
+            return new ResultSet(itResults, this.statementService, this);
+        } finally {
+            if (throttle != null) {
+                throttle.release(mode, inTransaction);
+            }
+        }
     }
 
     @Override
     public int executeUpdate(String sql) throws SQLException {
         log.debug("executeUpdate: {}", sql);
         checkClosed();
-        OpResult result = this.statementService.executeUpdate(this.connection.getSession(), sql, EMPTY_PARAMETERS_LIST,
-                this.statementUUID, this.properties);
-        this.connection.setSession(result.getSession());//TODO see if can do this in one place instead of updating session everywhere
-        return result.getIntValue();
+        ClientThrottleManager throttle = this.connection.getThrottleManager();
+        ClientThrottleMode mode = this.connection.getThrottleMode();
+        boolean inTransaction = !this.connection.getAutoCommit();
+        if (throttle != null && !throttle.tryAcquire(mode, inTransaction)) {
+            throw new java.sql.SQLTransientException("Client throttle limit reached; request rejected to protect OJP server");
+        }
+        try {
+            OpResult result = this.statementService.executeUpdate(this.connection.getSession(), sql, EMPTY_PARAMETERS_LIST,
+                    this.statementUUID, this.properties);
+            this.connection.setSession(result.getSession());
+            return result.getIntValue();
+        } finally {
+            if (throttle != null) {
+                throttle.release(mode, inTransaction);
+            }
+        }
     }
 
     @Override
