@@ -18,6 +18,11 @@ import java.util.concurrent.atomic.AtomicLong;
 @Slf4j
 public class SlotManager {
 
+    // Fraction of totalSlots used as a lower bound for observedPeak on admission timeout.
+    private static final double MIN_OBSERVED_PEAK_RATIO = 0.1;
+    // AIMD: additive-increase period = totalSlots * this multiplier releases.
+    private static final int AIMD_RECOVERY_PERIOD_MULTIPLIER = 2;
+
     private final int totalSlots;
     private final int slowSlots;
     private final int fastSlots;
@@ -291,15 +296,16 @@ public class SlotManager {
 
     private void recordAdmissionTimeout() {
         int currentActive = activeFastOperations.get() + activeSlowOperations.get();
-        int floor = Math.max(1, (int) (totalSlots * 0.1));
+        int floor = Math.max(1, (int) (totalSlots * MIN_OBSERVED_PEAK_RATIO));
         // Multiplicative decrease: clamp peak down to currentActive (observed saturation point).
-        // On first timeout (cur == 0), start from totalSlots so the peak is valid for AIMD.
+        // When cur == 0 (no timeout seen yet), use totalSlots as the initial upper bound so that
+        // Math.min always resolves to currentActive on the first call.
         observedPeak.updateAndGet(cur -> Math.max(floor, Math.min(cur == 0 ? totalSlots : cur, currentActive)));
     }
 
     private void tickAimdRecovery() {
         long count = releaseCount.incrementAndGet();
-        long period = Math.max(1L, (long) totalSlots * 2);
+        long period = Math.max(1L, (long) totalSlots * AIMD_RECOVERY_PERIOD_MULTIPLIER);
         // Additive increase: nudge the peak up by 1 every `period` releases once saturation eases.
         if (count % period == 0) {
             observedPeak.updateAndGet(cur -> (cur > 0 && cur < totalSlots) ? cur + 1 : cur);

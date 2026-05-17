@@ -69,16 +69,23 @@ public class Statement implements java.sql.Statement {
         checkClosed();
         ClientThrottleManager throttle = this.connection.getThrottleManager();
         ClientThrottleMode mode = this.connection.getThrottleMode();
+        // getAutoCommit() may throw SQLException; evaluate before acquiring a slot
+        // so that release() is never called without a matching acquire.
         boolean inTransaction = !this.connection.getAutoCommit();
-        if (throttle != null && !throttle.tryAcquire(mode, inTransaction)) {
-            throw new java.sql.SQLTransientException("Client throttle limit reached; request rejected to protect OJP server");
+        boolean acquired = false;
+        if (throttle != null) {
+            if (!throttle.tryAcquire(mode, inTransaction)) {
+                throw new java.sql.SQLTransientException(
+                        "Client throttle limit reached; request rejected to protect OJP server");
+            }
+            acquired = true;
         }
         try {
             Iterator<OpResult> itResults = this.statementService.executeQuery(this.connection.getSession(), sql,
                     EMPTY_PARAMETERS_LIST, this.statementUUID, this.properties);
             return new ResultSet(itResults, this.statementService, this);
         } finally {
-            if (throttle != null) {
+            if (acquired) {
                 throttle.release(mode, inTransaction);
             }
         }
@@ -90,9 +97,16 @@ public class Statement implements java.sql.Statement {
         checkClosed();
         ClientThrottleManager throttle = this.connection.getThrottleManager();
         ClientThrottleMode mode = this.connection.getThrottleMode();
+        // getAutoCommit() may throw SQLException; evaluate before acquiring a slot
+        // so that release() is never called without a matching acquire.
         boolean inTransaction = !this.connection.getAutoCommit();
-        if (throttle != null && !throttle.tryAcquire(mode, inTransaction)) {
-            throw new java.sql.SQLTransientException("Client throttle limit reached; request rejected to protect OJP server");
+        boolean acquired = false;
+        if (throttle != null) {
+            if (!throttle.tryAcquire(mode, inTransaction)) {
+                throw new java.sql.SQLTransientException(
+                        "Client throttle limit reached; request rejected to protect OJP server");
+            }
+            acquired = true;
         }
         try {
             OpResult result = this.statementService.executeUpdate(this.connection.getSession(), sql, EMPTY_PARAMETERS_LIST,
@@ -100,7 +114,7 @@ public class Statement implements java.sql.Statement {
             this.connection.setSession(result.getSession());
             return result.getIntValue();
         } finally {
-            if (throttle != null) {
+            if (acquired) {
                 throttle.release(mode, inTransaction);
             }
         }

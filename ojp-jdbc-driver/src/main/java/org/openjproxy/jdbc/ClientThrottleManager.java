@@ -15,6 +15,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class ClientThrottleManager {
 
+    // 10% safety headroom: clients target 90% of their fair share to avoid bursting exactly at the limit
+    private static final double THROTTLE_SAFETY_MARGIN = 0.9;
+
     private final AtomicInteger inFlight = new AtomicInteger(0);
     private volatile int proactiveLimit = Integer.MAX_VALUE;
     private volatile int reactiveLimit = Integer.MAX_VALUE;
@@ -35,7 +38,7 @@ public class ClientThrottleManager {
         if (maxAdmission > 0) {
             int rawProactive = (int) Math.min(Integer.MAX_VALUE,
                     (long) Math.ceil((double) maxAdmission / clientCount) * numOjpServers);
-            int newProactive = (int) (rawProactive * 0.9);
+            int newProactive = (int) (rawProactive * THROTTLE_SAFETY_MARGIN);
             if (newProactive < 1) {
                 newProactive = 1;
             }
@@ -50,7 +53,7 @@ public class ClientThrottleManager {
         if (observedPeak > 0 && maxAdmission > 0) {
             int rawReactive = (int) Math.min(Integer.MAX_VALUE,
                     (long) Math.ceil((double) observedPeak / clientCount) * numOjpServers);
-            int newReactive = (int) (rawReactive * 0.9);
+            int newReactive = (int) (rawReactive * THROTTLE_SAFETY_MARGIN);
             if (newReactive < 1) {
                 newReactive = 1;
             }
