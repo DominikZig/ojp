@@ -313,6 +313,252 @@ that should trigger failover instead of local queuing.
 
 ---
 
+## Option: Server-Cooperative Fair-Share Throttling via SessionInfo
+
+This section evaluates a specific design proposed as an alternative to the fully
+client-reactive approach above.
+
+### The Proposal
+
+Add two new fields to `SessionInfo` (returned to the driver on every operation):
+
+```proto
+message SessionInfo {
+    // ... existing fields ...
+    int32 clientCount = 9;      // number of distinct clients connected to this connHash
+    int32 maxAdmission = 10;    // server's total admission slot budget for this connHash
+}
+```
+
+The driver uses these to calculate and enforce a local concurrency semaphore:
+
+```
+perClientLimit = (maxAdmission / clientCount) * numOjpServers
+```
+
+Where `numOjpServers` is the number of UP nodes the driver knows about (already
+available from the `clusterHealth` field of `SessionInfo`).
+
+**Example:**
+- `maxAdmission = 20`, `clientCount = 4`, `numOjpServers = 1` → limit = **5** per client
+- `maxAdmission = 20`, `clientCount = 4`, `numOjpServers = 3` → limit = **15** per client
+
+---
+
+### Pros
+
+**1. Proactive, not reactive — no rejection needed to set the limit**
+The client has its budget from the very first `connect()` response. It does not need to
+receive a single rejection before throttling. This eliminates the activation-threshold
+tuning problem entirely.
+
+**2. Fair-share is explainable and auditable**
+The formula is deterministic. An operator can verify by inspection that each client
+holds exactly `(maxAdmission / clientCount) * numOjpServers` permits. There is no
+black-box AIMD state machine or sliding-window counter to reason about.
+
+**3. Handles the deactivation problem elegantly**
+When the server recovers (e.g., `maxAdmission` increases or `clientCount` drops as
+clients disconnect), the next `SessionInfo` response automatically delivers new values.
+The driver simply recalculates the semaphore limit. No probe logic, no cooldown window,
+no flapping.
+
+**4. Multinode-aware by construction**
+The formula already accounts for cluster size. If a node goes down, `clusterHealth`
+already carries that signal and the driver can update `numOjpServers` accordingly.
+No separate per-node throttle state is needed.
+
+**5. Reduces over-throttling when load drops**
+In the reactive model, a client stays throttled after the last rejection for a
+configurable window. Here, as clients disconnect and `clientCount` decreases,
+remaining clients automatically get a larger budget on the next response.
+
+**6. Backward compatible in proto3**
+New `int32` fields default to `0` in proto3. Older drivers that do not understand
+the fields will simply ignore them. Servers that do not set the fields send `0`,
+which the driver can interpret as "no limit" or "use default."
+
+---
+
+### Cons
+
+**1. `clientCount` is inherently stale**
+The server counts clients at the moment it builds the response. By the time the
+driver uses the count, clients may have connected or disconnected. Under rapid
+churn (e.g., microservice rolling restarts), the count can be significantly wrong
+for many seconds.
+
+**2. Integer division discards capacity**
+`floor(20 / 7) = 2`, leaving `20 - 14 = 6` slots on the server permanently
+unallocated. With many small clients, a significant fraction of server capacity
+goes unused. This needs mitigation (e.g., ceiling division, or a minimum-floor +
+remainder-distributed approach).
+
+**3. Division by zero when `clientCount = 0`**
+The driver must handle the case where no other clients are connected.
+The safe fallback is `perClientLimit = maxAdmission * numOjpServers`.
+
+**4. `maxAdmission` definition is ambiguous in multinode**
+Does `maxAdmission` refer to the per-node slot count, or to the aggregate cluster
+capacity? If it is per-node, the formula already multiplies by `numOjpServers`,
+so the semantics must be documented clearly. If it is aggregate, the multiplication
+must not happen.
+
+**5. Semaphore resizing is non-trivial**
+`java.util.concurrent.Semaphore` does not support changing its permit count directly.
+When the driver receives a new `clientCount`, it must drain excess permits or inject
+new ones safely. A common pattern is to track `currentLimit` separately and
+release/acquire the delta atomically. This requires careful implementation to avoid
+races.
+
+**6. All threads in one JVM share the same limit**
+If a single JVM has 50 threads all using the same datasource, the per-JVM semaphore
+limits the total to `perClientLimit`, regardless of how many threads are active.
+This is correct behavior, but operators must be aware: the limit is per-JVM
+(per `clientUUID`), not per-thread.
+
+**7. Thundering herd when a large client disconnects**
+When a large client (or many clients) disconnects, `clientCount` drops and every
+remaining client gets a suddenly larger budget. All of them may burst to fill their
+new limit simultaneously, potentially spiking the server back into overload. A step
+limit on permit increases (AIMD-style increase cap) would mitigate this.
+
+**8. Cross-node `clientCount` requires coordination**
+In a multi-node OJP cluster, each node sees only the clients connected to it. To
+compute a globally accurate `clientCount`, nodes must either gossip counts or share
+state. Without this, each node underestimates the total client count and each driver
+receives an inflated per-client limit. The product of inflated limits across all
+clients can exceed `maxAdmission`.
+
+---
+
+### Concerns
+
+**C1 — What counts as a "client" for `clientCount`?**
+Is it unique `clientUUID` values (JVM processes), unique active sessions, or unique
+active connections? For the formula to be correct, it should count distinct JVM
+processes (by `clientUUID`), not raw connection count, because one JVM may have
+many connections all sharing the same semaphore.
+
+**C2 — Update frequency and oscillation**
+`SessionInfo` is returned on every operation. If `clientCount` changes on every
+response (e.g., from 4 to 3 to 5 rapidly), the driver's semaphore limit will
+fluctuate on every call. This creates micro-oscillations. Consider applying a
+hysteresis rule: only update the semaphore if the new limit differs by more than
+N% from the current limit.
+
+**C3 — What should happen during the window between `connect()` and the first operation?**
+The driver receives `SessionInfo` (with `clientCount` and `maxAdmission`) immediately
+on `connect()`. It should create the semaphore before the first statement, not
+reactively after the first rejection.
+
+**C4 — Field naming and documentation**
+`clientCount` and `maxAdmission` in `SessionInfo` need precise Protobuf comments
+explaining the scope: per-node vs cluster-aggregate, per-clientUUID vs per-session,
+and what `0` means (field not set → no limit).
+
+**C5 — Interaction with in-flight transactions**
+Same concern as the purely reactive approach: mid-transaction statements must be
+exempt from the local semaphore or they risk deadlocking against the semaphore while
+the server holds a session lock waiting for commit/rollback.
+
+---
+
+### Suggestions
+
+**S1 — Use ceiling division and add a safety buffer**
+```java
+int rawLimit = (int) Math.ceil((double) maxAdmission / clientCount) * numOjpServers;
+int limit = Math.max(1, (int)(rawLimit * 0.9)); // 10% safety headroom
+```
+The 10% headroom prevents over-allocation due to stale `clientCount`.
+
+**S2 — Derive `numOjpServers` from `clusterHealth`**
+The `clusterHealth` field already encodes `"host1:port1(UP);host2:port2(DOWN);..."`.
+The driver can count `(UP)` entries instead of requiring a separate field.
+This removes a new field and reuses existing protocol.
+
+**S3 — Document `maxAdmission = 0` as "unlimited"**
+Servers that have not configured admission control set `maxAdmission = 0`.
+The driver should treat this as "no client-side throttle."
+This preserves backward compatibility and makes opt-out trivial.
+
+**S4 — Apply a step limit when increasing the semaphore**
+When `clientCount` drops and the limit should increase, apply a cap:
+increase by at most `X%` per `SessionInfo` update to avoid thundering-herd
+burst. When the limit should decrease, apply immediately.
+
+**S5 — Log limit changes at INFO level**
+```
+[WARN] Client throttle limit for connHash=abc123 reduced: 10 → 5 (clientCount=4 → 8, maxAdmission=20)
+[INFO] Client throttle limit for connHash=abc123 increased: 5 → 7 (clientCount=8 → 6, maxAdmission=20)
+```
+
+**S6 — On the server side: keep `clientCount` as a per-node snapshot**
+Do not attempt cross-node coordination for v1. Document that in multinode mode,
+`clientCount` reflects the per-node count. This makes the formula conservative
+(each driver slightly over-throttles), which is safe. A future version can add
+cluster-aggregate counts via gossip.
+
+---
+
+### Questions
+
+**Q1 — Should `maxAdmission` be per-node or cluster-aggregate?**
+If per-node (what `SlotManager` knows about), then multiplying by `numOjpServers`
+gives the right cluster total. If aggregate, the multiplication is wrong.
+**This must be pinned in the design before implementation.**
+
+**Q2 — Should `clientCount` count `clientUUID` (JVMs) or sessions?**
+A JVM with a connection pool of 50 connections would inflate `clientCount` by 50 if
+sessions are counted, completely distorting the formula.
+**Recommendation: count distinct `clientUUID` values per `connHash`.**
+
+**Q3 — How does the server compute `clientCount` efficiently?**
+It needs a live count of distinct `clientUUID`s that have an active session for
+the same `connHash`. This could be a `ConcurrentHashMap<connHash, Set<clientUUID>>`
+updated on session creation/termination. Is this acceptable overhead for the server?
+
+**Q4 — Should the driver store the semaphore per `connHash` or per `(connHash, targetServer)`?**
+In multinode mode with session stickiness, a client may have sessions on node A and
+node B simultaneously. Should the semaphore be shared across all nodes (per `connHash`)
+or per node? Sharing is simpler and correct if `maxAdmission` is cluster-aggregate.
+
+**Q5 — What should the driver do if `maxAdmission` arrives with a value lower than the
+current semaphore occupancy?**
+For example, current limit is 10, 8 threads hold permits, and the new limit is 5.
+The driver cannot revoke in-flight permits. It should stop issuing new permits until
+occupancy drops below 5. This is the natural behavior of reducing available permits
+but needs explicit handling.
+
+---
+
+### Comparison: Server-Cooperative vs Purely Reactive
+
+| Dimension | Purely Reactive | Server-Cooperative Fair-Share |
+|---|---|---|
+| Server protocol change | None | Two new `SessionInfo` int fields |
+| Client limit source | Inferred from rejections | Explicitly computed from server data |
+| Activation | After N rejections | Immediately at `connect()` |
+| Deactivation | Probe logic / cooldown | Automatic via `clientCount` update |
+| Fairness | Unknown (guesswork) | Guaranteed by formula |
+| Multinode awareness | Requires per-node state | Built into formula via `numOjpServers` |
+| Stale data risk | High (only sees own rejections) | Low-Medium (clientCount lag) |
+| Implementation complexity | Medium (driver only) | Medium (driver + server tracking) |
+| Thundering-herd risk | Low (only activates under stress) | Present (on client disconnect surge) |
+| Recommended for | No-protocol-change constraint | General case, new feature development |
+
+**Opinion:** The server-cooperative approach is materially better in production behavior.
+The two extra int fields in `SessionInfo` are a minimal protocol cost for a significantly
+more stable and fair throttle. If the team is willing to make the server change, this
+design should be preferred over the purely reactive model.
+
+The main implementation risk is cross-node `clientCount` accuracy. Starting with
+per-node snapshot counts (conservative, safe) and evolving to cluster-aggregate counts
+(accurate) is the right phased approach.
+
+---
+
 ## Relationship to Existing Analysis
 
 This document is a deep dive into one specific variant described in Option Set 2 / Option 3
