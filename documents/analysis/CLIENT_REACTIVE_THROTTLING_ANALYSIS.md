@@ -1,1012 +1,177 @@
-# Client-Reactive Throttling in OJP — Deep Analysis
+# OJP Client-Side Throttling — Design Notes
 
-## The Idea
+## Current Design: Two Configurable Modes
 
-Instead of waiting for the server to explicitly tell the client to slow down,
-the JDBC driver could observe server-side rejection exceptions on its own and
-self-throttle proactively:
+Both modes use the same `AtomicInteger` fail-fast counter in the driver (no blocking,
+no Semaphore) and AIMD step-limited increase. They differ only in where the limit comes from.
 
-1. Driver receives a semaphore-reject signal from the server
-   (`RESOURCE_EXHAUSTED` from `ConcurrencyThrottleInterceptor`,
-   or a timeout-translated `ServerOverloadException` propagated as `SQLException`).
-2. Driver activates a local concurrency limiter for the affected datasource.
-3. Subsequent calls queue locally inside the driver, up to a bounded depth.
-4. If the local queue is already full, new requests fail immediately with a clear exception,
-   without wasting a round-trip to the server.
-5. When server responses improve, driver gradually deactivates the limiter.
-
-This is a purely client-reactive model — no new server-side protocol changes needed.
-
----
-
-## What the Server Already Sends
-
-| Signal source | What the driver receives today |
-|---|---|
-| `ConcurrencyThrottleInterceptor` | gRPC `RESOURCE_EXHAUSTED` with message `"Server overloaded: too many concurrent requests"` |
-| `SlotManager.acquireSlowSlot` / `acquireFastSlot` returning `false` | `ServerOverloadException` thrown server-side, propagated to driver as `SQLException` |
-| `SlotManager.canWaitForSlot` returning `false` (queue depth exceeded) | Same `ServerOverloadException` path |
-| Slot acquisition timeout | Same `ServerOverloadException` path |
-
-The driver today does not act on these differently from other `SQLException`s.
-Everything needed to trigger client-reactive throttling is already there.
-
----
-
-## Pros
-
-### 1. Zero server-side changes required
-The trigger signal already exists in both forms (`RESOURCE_EXHAUSTED` status code and
-`ServerOverloadException`). No protocol change, no new gRPC messages, no server rebuild.
-
-### 2. Earlier protection for the calling application
-With pure server-side rejection, each refused request still consumed:
-- a gRPC channel slot,
-- network round-trip latency (even for fast-fail paths),
-- application thread time waiting for the exception.
-
-A local queue absorbs bursts silently and prevents those costs from piling up.
-
-### 3. Reduces server-side queue pressure during recovery
-When the server is recovering from overload, rejected clients that immediately retry
-can re-flood the server. Client-side queuing creates a natural back-pressure buffer,
-giving the server room to drain its own semaphore queues.
-
-### 4. Cleaner application error semantics
-Without this, application threads see `RESOURCE_EXHAUSTED` / `ServerOverloadException`
-directly. With client-side queuing, most requests simply wait a controlled amount of time,
-and only fail if the local queue is exhausted — a shorter, more deterministic wait.
-
-### 5. Complements, not replaces, existing server controls
-The server admission control (`SlotManager`, `ConcurrencyThrottleInterceptor`) remains
-the authoritative gate. Client throttling is a second shield that reduces unnecessary
-server hits. Defense in depth.
-
-### 6. Works without server coordination
-For multinode setups where different server nodes may be under different loads,
-each driver instance reacts to the node it is currently hitting. No need for cross-node
-policy agreement at this stage.
-
----
-
-## Cons
-
-### 1. Client has an incomplete view of server state
-The driver knows it was rejected, but it does not know:
-- whether the server is still overloaded or already recovered,
-- whether other clients are also backing off (leading to under-utilization),
-- whether the overload was transient (e.g., a GC pause) or structural.
-
-This can lead to overly cautious throttling that outlasts the actual problem.
-
-### 2. Risk of over-throttling good clients
-If one datasource is under load and another is idle, a naive global driver-side
-limiter would throttle all datasources equally. Granularity must be per-datasource
-(per `connHash`) or the throttling will be too broad.
-
-### 3. Queue memory footprint in the driver
-Each queued request holds a thread (or at minimum a waiting object + monitor lock).
-With N app threads and M datasources, worst-case queue memory can be significant.
-A hard bounded queue depth mitigates this, but sizing it incorrectly causes its own
-problems (too small → fast fail even under light load; too large → out-of-memory risk).
-
-### 4. Throttle deactivation is harder than activation
-Activation is easy: see a rejection, enable throttling.
-Deactivation requires evidence that the server has recovered — but the driver only
-gets that evidence by sending requests through. This creates a "cold restart" problem:
-the driver may stay throttled long after the server has recovered.
-
-### 5. Latency amplification in the success path
-Once throttling is active, every request incurs queue wait overhead even if it
-would have succeeded on the server. This raises p99 latency for all users of that
-datasource, not just those that would have been rejected.
-
-### 6. Interactions with session stickiness and XA
-OJP session stickiness requires the same driver to reuse the same physical server-side
-session. If the driver throttles and queues a request that belongs to an open
-transaction, and the transaction times out server-side while the request is sitting in
-the driver queue, the client will eventually get a stale-session error when it finally
-sends the request. The driver queue timeout must be shorter than the server-side
-session/transaction timeout.
-
-### 7. Multinode asymmetry
-If the driver is in multinode mode and one server node rejects while another is
-available, the right answer is to route to the healthy node, not to queue locally.
-Client-reactive throttling must be aware of multinode routing and only activate
-per-node, not globally.
-
----
-
-## Concerns
-
-### C1 — What exception types should be the trigger?
-
-The driver currently receives two distinct signals:
-- gRPC `RESOURCE_EXHAUSTED` (ConcurrencyThrottleInterceptor)
-- `SQLException` wrapping `ServerOverloadException`
-
-These may not be easy to distinguish from SQL-level errors that happen to use
-similar gRPC status codes. The driver needs a clear, reliable classification.
-**Concern: Is the current exception taxonomy precise enough to act on safely?**
-
-### C2 — Activation threshold tuning
-
-A single rejection → throttle activation is too aggressive.
-A hundred rejections before activation is too slow.
-The right number depends on query frequency and server capacity.
-**Concern: A fixed default threshold will be wrong for many deployments.
-This needs to be configurable, and the default requires careful thought.**
-
-### C3 — Flapping between throttled and unthrottled state
-
-Without hysteresis, the driver will oscillate:
-1. Receives rejection → activates throttle.
-2. First few requests pass through → deactivates throttle.
-3. Server is still stressed → rejects → activates again.
-...repeat.
-
-This flapping adds noise to metrics and can cause latency spikes.
-**Concern: Hysteresis logic is easy to get wrong and hard to test.
-It needs dedicated test coverage with simulated server stress patterns.**
-
-### C4 — Queue depth vs wait timeout — which is the primary control?
-
-Both are needed, but they interact:
-- A deep queue with a long timeout can hold threads for minutes.
-- A shallow queue with a short timeout fails fast but may not protect the server.
-
-**Concern: The right combination is workload-specific. Operators need guidance on
-how to tune these together, not just individual knobs.**
-
-### C5 — Impact on connection pool metrics and health checks
-
-If the application uses connection pool health checks (e.g., Spring Boot actuator),
-those checks also go through the driver. A throttled driver that queues health check
-pings will make a healthy server appear unhealthy.
-**Concern: Health check paths should bypass the driver-side throttle queue,
-or at minimum use a dedicated permit bucket.**
-
-### C6 — Exception message clarity
-
-When the driver rejects a call due to local queue saturation, the exception message
-must clearly distinguish this from a server rejection. The application and operators
-need to know whether to blame the client configuration or the server load.
-**Concern: "Connection refused" or a raw SQL exception code is not enough.
-The exception must name the source: client-side throttle queue exhausted.**
-
-### C7 — Testing difficulty
-
-Server-side admission control can be tested by starting an OJP server and overwhelming
-it. Client-reactive throttling is harder to test deterministically because the trigger
-depends on receiving specific exceptions from the server, which requires fine-grained
-control of the test server's semaphore state.
-**Concern: Without dedicated test infrastructure (e.g., a mock gRPC server that injects
-RESOURCE_EXHAUSTED on demand), this feature will be hard to test reliably in CI.**
-
----
-
-## Suggestions
-
-### S1 — Trigger on `RESOURCE_EXHAUSTED` + classify on consecutive count
-
-Use a sliding window of N consecutive `RESOURCE_EXHAUSTED` / `ServerOverloadException`
-responses (not just one) to activate throttling. Start with N=3 as default.
-This avoids triggering on transient single-request failures.
-
-### S2 — Scope throttle per `connHash` (datasource), not globally
-
-Each OJP driver instance may manage multiple datasources via different `connHash` values.
-The local semaphore/queue should be keyed by `connHash` so a loaded datasource does not
-block requests to an idle one.
-
-### S3 — Use a probe request for deactivation
-
-Rather than waiting for N successes under throttle, periodically send one "probe" request
-through the full path (bypassing local queue) to test whether the server has recovered.
-If the probe succeeds, step up concurrency. This is the AIMD (additive increase,
-multiplicative decrease) recovery pattern.
-
-### S4 — Short queue, short timeout
-
-Default queue depth: `max(2, threads_per_datasource / 2)`.
-Default queue wait: 2–5 seconds.
-These are deliberately conservative: fail fast is better than masking an outage.
-Make both configurable.
-
-### S5 — Bypass throttle for in-flight transactions
-
-If a JDBC `Connection` is mid-transaction (`autoCommit = false`), its subsequent
-statements must not be queued separately — they must be allowed through immediately
-to avoid transaction timeout. Track per-connection transaction state in the driver
-and exempt in-transaction calls from the queue.
-
-### S6 — Add a metric + log for every throttle state transition
-
-- Log `WARN` when throttle activates, with: datasource, rejection count, active threads.
-- Log `INFO` when throttle deactivates, with: datasource, recovered after N seconds.
-- Expose via JMX/OpenTelemetry: throttle-active flag, queue depth, rejected request count.
-
-### S7 — Keep the feature off by default
-
-Introduce behind an opt-in property, e.g. `ojp.jdbc.clientThrottle.enabled=false`.
-Operators who want the behavior enable it explicitly. Allows gradual rollout.
-
----
-
-## Questions
-
-**Q1 — Should the local queue block the calling thread or use a callback/future model?**
-Blocking the calling thread is JDBC-natural and the simplest implementation.
-But it consumes a thread per queued request. If the calling application uses virtual
-threads (Java 21+) this is fine. For platform threads, thread starvation is a real risk.
-
-**Q2 — Should client throttling be per `clientUUID` (JVM) or per `connHash` (datasource)?**
-Per `clientUUID` would be simpler, but all datasources on one JVM would share a limit.
-Per `connHash` is more precise but requires more state. Both?
-
-**Q3 — Should the driver tell the server it is throttling?**
-If the driver sends a hint ("I am backing off"), the server can relax its own queue
-limit for this client temporarily. This turns the reactive model into a cooperative
-one but requires protocol changes.
-
-**Q4 — How does this interact with the circuit breaker?**
-OJP already has a circuit breaker timeout (default 60 seconds). If the server is down,
-the circuit opens and requests fail fast. Client-reactive throttling targets a different
-scenario: server is up but overloaded. These two features must not conflict —
-circuit-open should bypass the client throttle queue entirely.
-
-**Q5 — What happens if multiple threads hit the same throttle at the same time?**
-The local queue semaphore must be thread-safe. `java.util.concurrent.Semaphore` with fair
-mode is the obvious choice. But fair mode adds latency under contention. Is fairness
-important here, or is FIFO within the queue sufficient?
-
-**Q6 — How long should the throttle stay active after the last rejection?**
-There needs to be a minimum active window (e.g., 10 seconds) even if no more rejections
-arrive, to avoid deactivating too early while the server is still under pressure.
-What should the default minimum window be?
-
-**Q7 — Should read-only queries be throttled less aggressively than writes?**
-Reads are typically idempotent and retryable. Writes may have side effects and
-different latency SLAs. Should there be separate queue limits for reads vs writes?
-
----
-
-## Opinions
-
-**On the overall idea — Confidence: High (80%)**
-
-This is the right first step for a client-side protection layer. It requires no
-server changes, leverages existing exception signals, and provides real value by
-absorbing burst traffic before it hits the server repeatedly.
-The main risk is incorrect deactivation timing — but that is a tuning problem,
-not a fundamental flaw.
-
-**On activation threshold — N=3 consecutive rejections is probably right for a default.**
-It is fast enough to react to real overload and robust enough to ignore transient
-single-request failures (GC pauses, restart hiccups).
-
-**On queue depth — Err small, not large.**
-The entire point of fail-fast is to surface the problem to the application quickly.
-A large queue hides overload and makes root-cause analysis harder. Start with a
-shallow default (e.g., queue depth = active threads / 2) and let operators increase it.
-
-**On blocking threads — This is the JDBC model and should be embraced.**
-JDBC is synchronous by contract. Blocking the calling thread is the expected behavior.
-A non-blocking/async implementation would require a fundamentally different API that
-most applications are not ready for.
-
-**On deactivation — The probe approach is better than time-based deactivation.**
-A fixed cooldown window is fragile. If the server recovers in 5 seconds but the cooldown
-is 30 seconds, you are throttling for no reason. Probe-based recovery (AIMD) adapts
-to actual server state.
-
-**On scope: per-`connHash` is the right granularity.**
-OJP is primarily a proxy for multiple datasources. A global driver throttle would be
-the wrong abstraction. The connection hash already distinguishes datasources and is
-the right key for the throttle state.
-
-**On the interaction with multinode mode — This is a real gap that needs more thought.**
-In multinode mode, a rejection from one node should trigger routing to another node
-before activating local throttling. If all nodes reject, then activate throttling.
-Implementing client throttling without multinode awareness risks masking node failures
-that should trigger failover instead of local queuing.
-
----
-
-## Option: Server-Cooperative Fair-Share Throttling via SessionInfo
-
-This section evaluates a specific design proposed as an alternative to the fully
-client-reactive approach above.
-
-### The Proposal
-
-Add two new fields to `SessionInfo` (returned to the driver on every operation):
+### Protocol additions to `SessionInfo`
 
 ```proto
-message SessionInfo {
-    // ... existing fields ...
-    int32 clientCount = 9;      // number of distinct clients connected to this connHash
-    int32 maxAdmission = 10;    // server's total admission slot budget for this connHash
-}
+int32 clientCount   = 9;   // distinct JVMs (clientUUID) connected to this connHash on this node
+int32 maxAdmission  = 10;  // per-node HikariCP pool size (confirmed: SlotManager.totalSlots = actualPoolSize)
+int32 observedPeak  = 11;  // adaptive effective capacity (0 = no failure observed yet)
 ```
 
-The driver uses these to calculate and enforce a local concurrency limiter:
-
-```
-perClientLimit = ceil(maxAdmission / clientCount) * numOjpServers * 0.9
-```
-
-Where:
-- `maxAdmission` is the **per-node** admission slot budget (= HikariCP pool size on that node)
-- `clientCount` is the number of distinct JVM processes (`clientUUID`) connected to this
-  `connHash` on this node
-- `numOjpServers` is the number of UP nodes (derived from the `clusterHealth` field)
-- `0.9` is the 10% safety headroom to absorb stale `clientCount`
-
-**Example:**
-- `maxAdmission = 20` (per-node pool size), `clientCount = 4`, `numOjpServers = 1`
-  → rawLimit = `ceil(20/4) * 1 = 5` → with headroom: **4** per client
-- `maxAdmission = 20`, `clientCount = 4`, `numOjpServers = 3`
-  → rawLimit = `ceil(20/4) * 3 = 15` → with headroom: **13** per client
+`clusterHealth` already carries the UP/DOWN node list; `numOjpServers` is derived from it.
 
 ---
 
-### Pros
+### Proactive Mode
 
-**1. Proactive, not reactive — no rejection needed to set the limit**
-The client has its budget from the very first `connect()` response. It does not need to
-receive a single rejection before throttling. This eliminates the activation-threshold
-tuning problem entirely.
-
-**2. Fair-share is explainable and auditable**
-The formula is deterministic. An operator can verify by inspection that each client
-holds exactly `(maxAdmission / clientCount) * numOjpServers` permits. There is no
-black-box AIMD state machine or sliding-window counter to reason about.
-
-**3. Handles the deactivation problem elegantly**
-When the server recovers (e.g., `maxAdmission` increases or `clientCount` drops as
-clients disconnect), the next `SessionInfo` response automatically delivers new values.
-The driver simply recalculates the semaphore limit. No probe logic, no cooldown window,
-no flapping.
-
-**4. Multinode-aware by construction**
-The formula already accounts for cluster size. If a node goes down, `clusterHealth`
-already carries that signal and the driver can update `numOjpServers` accordingly.
-No separate per-node throttle state is needed.
-
-**5. Reduces over-throttling when load drops**
-In the reactive model, a client stays throttled after the last rejection for a
-configurable window. Here, as clients disconnect and `clientCount` decreases,
-remaining clients automatically get a larger budget on the next response.
-
-**6. Backward compatible in proto3**
-New `int32` fields default to `0` in proto3. Older drivers that do not understand
-the fields will simply ignore them. Servers that do not set the fields send `0`,
-which the driver can interpret as "no limit" or "use default."
-
----
-
-### Cons
-
-**1. `clientCount` is inherently stale**
-The server counts clients at the moment it builds the response. By the time the
-driver uses the count, clients may have connected or disconnected. Under rapid
-churn (e.g., microservice rolling restarts), the count can be significantly wrong
-for many seconds.
-
-**2. Integer division discards capacity**
-`floor(20 / 7) = 2`, leaving `20 - 14 = 6` slots on the server permanently
-unallocated. With many small clients, a significant fraction of server capacity
-goes unused. This needs mitigation (e.g., ceiling division, or a minimum-floor +
-remainder-distributed approach).
-
-**3. Division by zero when `clientCount = 0`**
-The driver must handle the case where no other clients are connected.
-The safe fallback is `perClientLimit = maxAdmission * numOjpServers`.
-
-**4. `maxAdmission` is per-node — confirmed by server code**
-`totalSlots` in `SlotManager` is set to `actualPoolSize`, which is the HikariCP connection pool
-size configured on **this specific OJP node** (`CreateSlowQuerySegregationManagerAction`).
-Each node tracks only its own pool. `maxAdmission` is therefore per-node, not cluster-aggregate.
-The formula `(maxAdmission / clientCount) * numOjpServers` is correct: it multiplies the
-per-node budget by the number of UP nodes to derive the total cluster budget available to
-one client. This must be clearly documented in the proto field comment.
-
-**5. Resizing a concurrency limiter — and a cheaper alternative**
-`java.util.concurrent.Semaphore` does not support changing its permit count directly.
-However, if the driver uses **fail-fast** (non-blocking) concurrency control — which is
-the right choice here, since blocking adds latency to every successful request — a plain
-`AtomicInteger` counter is sufficient and trivially resizable:
+Throttles from the very first `connect()` using the fair-share formula:
 
 ```java
-// Per-connHash state stored in the driver
+int effectiveAdmission = (observedPeak > 0) ? observedPeak : maxAdmission;
+int rawLimit = (int) Math.ceil((double) effectiveAdmission / clientCount) * numOjpServers;
+int limit = Math.max(1, (int)(rawLimit * 0.9));  // 10% safety headroom
+```
+
+**Why ceiling division + 10% headroom:**
+Floor division permanently wastes capacity (`floor(20/7)=2` leaves 6 slots idle).
+Ceiling slightly over-allocates (`ceil(20/7)=3`, total=21 vs capacity=20), so the 10%
+reduction absorbs one stale `clientCount` error.
+
+**Why 10%, not more:** Absorbs exactly one missed client join/leave cycle at typical
+client counts without meaningfully reducing steady-state throughput.
+
+**Concurrency control — `AtomicInteger` counter:**
+
+```java
 AtomicInteger inFlight = new AtomicInteger(0);
-volatile int limit;          // updated when SessionInfo delivers new values
+volatile int limit;  // single volatile write on every SessionInfo response
 
 // Acquire (non-blocking, fail-fast):
 if (inFlight.incrementAndGet() > limit) {
     inFlight.decrementAndGet();
-    throw new SQLException("Client throttle limit exceeded for datasource: " + connHash);
+    throw new SQLException("Client throttle limit exceeded: " + connHash);
 }
-
 // Release (always in finally):
 inFlight.decrementAndGet();
-
-// Resize (on every SessionInfo response):
-limit = newLimit;            // single volatile write, no locks needed
 ```
 
-This is **zero-overhead on the happy path** (one atomic increment, one integer comparison)
-and resizing is a single volatile write. No drain/inject logic, no races, no lock contention.
-The tradeoff is that over-limit requests fail immediately rather than queuing — which is the
-desired fail-fast behaviour for a client-side overload guard.
+Zero overhead on the happy path. Resizing is one volatile write.
 
-**6. All threads in one JVM share the same limit**
-If a single JVM has 50 threads all using the same datasource, the per-JVM semaphore
-limits the total to `perClientLimit`, regardless of how many threads are active.
-This is correct behavior, but operators must be aware: the limit is per-JVM
-(per `clientUUID`), not per-thread.
+**AIMD step-limited increase:**
+- Decrease: apply immediately (fast overload response).
+- Increase: `limit = min(newLimit, currentLimit + 1)` per `SessionInfo` update.
 
-**7. Thundering herd when a large client disconnects**
-When a large client (or many clients) disconnects, `clientCount` drops and every
-remaining client gets a suddenly larger budget. All of them may burst to fill their
-new limit simultaneously, potentially spiking the server back into overload. A step
-limit on permit increases (AIMD-style increase cap) would mitigate this.
+Rationale: when 4 out of 8 clients disconnect simultaneously, every remaining client
+would burst to the new higher limit at once. Step-limited increase prevents this spike.
+Under normal query load, `SessionInfo` arrives every few ms; convergence takes seconds.
 
-**8. Cross-node `clientCount` — plain-language explanation with example**
+**In-transaction bypass:**
+When `autoCommit == false`, subsequent statements on that connection skip the `inFlight`
+check. Without this, a thread holding an open transaction can block waiting for a permit
+while other threads consume all permits, causing the server's transaction timeout to fire
+before the thread ever sends its next statement (deadlock-by-timeout).
 
-In a 2-node OJP cluster, clients can connect to different nodes:
-
-```
-App1 → OJP Node A  (Node A sees: App1 only → clientCount = 1)
-App2 → OJP Node B  (Node B sees: App2 only → clientCount = 1)
-```
-
-Node A tells App1: `clientCount = 1, maxAdmission = 10, numOjpServers = 2`
-→ App1 calculates: `(10 / 1) * 2 = 20` permits.
-
-Node B tells App2: `clientCount = 1, maxAdmission = 10, numOjpServers = 2`
-→ App2 calculates: `(10 / 1) * 2 = 20` permits.
-
-But each node can only handle 10 concurrent requests. App1 hits Node A with up to 20,
-App2 hits Node B with up to 20 — a total of 40 in-flight against a real cluster capacity
-of 20. Both nodes overload.
-
-**Root cause:** Each node sees only its own connected clients, so it underestimates
-`clientCount` and each client gets an over-inflated limit.
-
-**Safe v1 approach (S6):** Accept the per-node snapshot. In the steady state for multinode,
-clients spread across nodes. The formula slightly over-throttles when clients unevenly
-concentrate on one node, but the server's own admission control (`SlotManager`) remains
-the final safety gate regardless. A future version can add cluster-aggregate counts via
-cross-node state sharing.
+**Cross-node `clientCount` caveat (v1 documented limitation):**
+Each node counts only its own connected clients. In a 2-node cluster where App1 connects
+to Node A and App2 to Node B, both nodes report `clientCount = 1`, so both clients
+compute `(10/1)*2 = 20` permits — against a real cluster capacity of 20. The formula
+over-allocates. The server's own `SlotManager` is the final safety gate. Fix deferred
+to v2 (cross-node count sharing).
 
 ---
 
-### Concerns
+### Reactive Mode (`observedPeak`)
 
-**C1 — Resolved: `clientCount` counts distinct `clientUUID` values per `connHash`**
-`clientUUID` is a static UUID per JVM process (see `ClientUUID.java`). One JVM running
-a 50-connection pool has exactly one `clientUUID`. Counting `clientUUID` values per
-`connHash` ensures the formula reflects the number of distinct application processes,
-not connections. A single JVM with 50 connections counts as 1 client.
+Instead of using the static configured pool size, the server tracks the actual peak
+in-flight count just before an admission timeout occurred, and sends it as `observedPeak`.
 
-**C2 — Update frequency and oscillation**
-`SessionInfo` is returned on every operation. If `clientCount` changes on every
-response (e.g., from 4 to 3 to 5 rapidly), the driver's semaphore limit will
-fluctuate on every call. This creates micro-oscillations. Consider applying a
-hysteresis rule: only update the semaphore if the new limit differs by more than
-N% from the current limit.
+**How it works (TCP CWND analogy — shrink on loss, grow slowly on clean delivery):**
 
-**C3 — What should happen during the window between `connect()` and the first operation?**
-The driver receives `SessionInfo` (with `clientCount` and `maxAdmission`) immediately
-on `connect()`. It should create the semaphore before the first statement, not
-reactively after the first rejection.
-
-**C4 — Field naming and documentation**
-`clientCount` and `maxAdmission` in `SessionInfo` need precise Protobuf comments
-explaining the scope: per-node vs cluster-aggregate, per-clientUUID vs per-session,
-and what `0` means (field not set → no limit).
-
-**C5 — In-transaction bypass — plain-language explanation with example**
-
-Without a bypass, a mid-transaction thread can block itself via the client semaphore:
-
-1. Thread A sends `BEGIN` (or first statement with `autoCommit = false`). The server
-   creates a session and holds a real database connection for Thread A.
-2. Other threads (B–Z) are running queries. The client semaphore fills to its limit.
-3. Thread A now sends `INSERT INTO orders VALUES (...)` — the next statement in its
-   open transaction.
-4. The client semaphore is full → Thread A is blocked waiting for a permit.
-5. Thread B–Z are also holding their permits, waiting for server responses. Nobody
-   finishes quickly; nobody releases.
-6. Meanwhile the server's transaction timeout fires. The server rolls back Thread A's
-   transaction and releases its database connection.
-7. Thread A eventually gets a permit (or times out in the queue), sends the INSERT,
-   and receives a "session not found" or "transaction already rolled back" error.
-
-**This is a deadlock-by-timeout:** the client queue blocks the thread that should be
-completing an open server-side transaction, while the server's clock runs out.
-
-**Fix:** When a `Connection` has `autoCommit = false`, subsequent statements on that
-connection must bypass the client semaphore and go directly to the server. The semaphore
-controls admission for *new requests* only — not continuation of an already-admitted,
-already-open transaction. Track `autoCommit` state in the driver's `OjpConnection` and
-skip the `inFlight` check when `autoCommit == false`.
-
----
-
-### Suggestions
-
-**S1 — Use ceiling division with a 10% safety headroom**
-
-**Why ceiling division, not floor:**
-Floor division permanently wastes capacity. With `maxAdmission = 20` and `clientCount = 7`,
-`floor(20/7) = 2` per client. Total allocated = `2 × 7 = 14`. Six slots on the server sit
-idle even when clients have work to do. With many clients this waste compounds.
-
-Ceiling division gives `ceil(20/7) = 3`. Total allocated = `3 × 7 = 21` — slightly over
-the server capacity, which is why the safety headroom is needed.
-
-**Why 10% safety headroom:**
-`clientCount` is always slightly stale (it was accurate when the server built the response,
-not when the driver reads it). If one new client joined since the last response, the true
-`clientCount` is `clientCount + 1`. Ceiling division without headroom could briefly allow
-`clientCount + 1` clients each holding `ceil(20/7) = 3` permits = 24 in-flight against a
-server capacity of 20. The 10% reduction absorbs one stale-count error at typical client
-counts, without meaningfully reducing steady-state throughput.
-
+Server changes in `SlotManager`:
 ```java
-// clientCount > 0 is guaranteed by the caller (see C1 for division-by-zero handling)
-int rawLimit = (int) Math.ceil((double) maxAdmission / clientCount) * numOjpServers;
-int limit = Math.max(1, (int)(rawLimit * 0.9)); // 10% safety headroom, minimum 1
-```
-
-**S2 — Derive `numOjpServers` from `clusterHealth`**
-The `clusterHealth` field already encodes `"host1:port1(UP);host2:port2(DOWN);..."`.
-The driver can count `(UP)` entries instead of requiring a separate field.
-This removes a new field and reuses existing protocol.
-
-**S3 — Document `maxAdmission = 0` as "unlimited"**
-Servers that have not configured admission control set `maxAdmission = 0`.
-The driver should treat this as "no client-side throttle."
-This preserves backward compatibility and makes opt-out trivial.
-
-**S4 — AIMD-style step-limited increase when the limit grows**
-
-**Why a step limit on increase:**
-When several clients disconnect simultaneously, `clientCount` drops sharply. Every remaining
-client immediately recomputes a much larger limit and bursts to fill it.
-
-Example: 8 clients, `maxAdmission = 40`, limit = 5 each. Four clients disconnect.
-New `clientCount = 4`, new computed limit = 10. All 4 remaining clients burst to 10
-simultaneous requests at the same moment → 40 in-flight, exactly at server capacity.
-Any brief measurement noise or one late-joining client pushes the server into overload.
-
-**The AIMD rule (Additive Increase, Multiplicative Decrease):**
-- **Decrease:** When the new limit is *lower* than the current limit, apply it immediately.
-  Fast response to overload is the priority.
-- **Increase:** When the new limit is *higher*, apply only `min(newLimit, currentLimit + step)`
-  per `SessionInfo` update, where `step` is a small additive value (default: 1 permit
-  per update).
-
-**Example with step = 1:**
-- Current limit = 5, new computed limit = 10.
-- Update 1: limit → `min(10, 5+1) = 6`
-- Update 2: limit → `min(10, 6+1) = 7`
-- ... converges to 10 over 5 response cycles.
-
-Under normal query load, `SessionInfo` responses arrive every few milliseconds, so convergence
-takes seconds at most — fast enough to be responsive, slow enough to avoid a burst spike.
-
-**Why additive (not multiplicative) increase:**
-Each `SessionInfo` update arrives quickly (with every operation). Adding 1 permit per
-response converges to the target in seconds. Multiplicative increase (e.g., double each
-time) would overshoot the target and cause oscillation. Additive increase is simple,
-predictable, and easy to test.
-
-**S5 — Log limit changes at INFO level**
-```
-[WARN] Client throttle limit for connHash=abc123 reduced: 10 → 5 (clientCount=4 → 8, maxAdmission=20)
-[INFO] Client throttle limit for connHash=abc123 increased: 5 → 7 (clientCount=8 → 6, maxAdmission=20)
-```
-
-**S6 — On the server side: keep `clientCount` as a per-node snapshot**
-Do not attempt cross-node coordination for v1. Document that in multinode mode,
-`clientCount` reflects the per-node count. This makes the formula conservative
-(each driver slightly over-throttles), which is safe. A future version can add
-cluster-aggregate counts via gossip.
-
----
-
-### Questions
-
-**Q1 — Resolved: `maxAdmission` is per-node**
-`totalSlots` in `SlotManager` equals `actualPoolSize`, which is the HikariCP connection
-pool size configured on this node (`CreateSlowQuerySegregationManagerAction`). Each OJP
-node tracks only its own pool. The formula correctly multiplies by `numOjpServers` to
-derive the total cluster budget available to one client.
-
-**Q2 — Should `clientCount` count `clientUUID` (JVMs) or sessions?**
-A JVM with a connection pool of 50 connections would inflate `clientCount` by 50 if
-sessions are counted, completely distorting the formula.
-**Recommendation: count distinct `clientUUID` values per `connHash`.**
-
-**Q3 — How does the server compute `clientCount` efficiently?**
-It needs a live count of distinct `clientUUID`s that have an active session for
-the same `connHash`. This could be a `ConcurrentHashMap<connHash, Set<clientUUID>>`
-updated on session creation/termination. Is this acceptable overhead for the server?
-
-**Q4 — Should the driver store the semaphore per `connHash` or per `(connHash, targetServer)`?**
-In multinode mode with session stickiness, a client may have sessions on node A and
-node B simultaneously. Should the semaphore be shared across all nodes (per `connHash`)
-or per node? Sharing is simpler and correct if `maxAdmission` is cluster-aggregate.
-
-**Q5 — What should the driver do if `maxAdmission` arrives with a value lower than the
-current semaphore occupancy?**
-For example, current limit is 10, 8 threads hold permits, and the new limit is 5.
-The driver cannot revoke in-flight permits. It should stop issuing new permits until
-occupancy drops below 5. This is the natural behavior of reducing available permits
-but needs explicit handling.
-
----
-
-### Comparison: Server-Cooperative vs Purely Reactive
-
-| Dimension | Purely Reactive | Server-Cooperative Fair-Share |
-|---|---|---|
-| Server protocol change | None | Two new `SessionInfo` int fields |
-| Client limit source | Inferred from rejections | Explicitly computed from server data |
-| `maxAdmission` scope | N/A | Per-node (= HikariCP pool size on that node) |
-| Activation | After N rejections | Immediately at `connect()` |
-| Deactivation | Probe logic / cooldown | Automatic via `clientCount` update |
-| Fairness | Unknown (guesswork) | Guaranteed by formula |
-| Multinode awareness | Requires per-node state | Built into formula via `numOjpServers` |
-| Stale data risk | High (only sees own rejections) | Low-Medium (clientCount lag) |
-| Concurrency control | Semaphore (blocking optional) | AtomicInteger counter (fail-fast, zero-latency) |
-| Implementation complexity | Medium (driver only) | Medium (driver + server tracking) |
-| Thundering-herd risk | Low (only activates under stress) | Mitigated by AIMD step-limited increase |
-| Recommended for | No-protocol-change constraint | General case, new feature development |
-
-**Opinion:** The server-cooperative approach is materially better in production behavior.
-The two extra int fields in `SessionInfo` are a minimal protocol cost for a significantly
-more stable and fair throttle. If the team is willing to make the server change, this
-design should be preferred over the purely reactive model.
-
-The main implementation risk is cross-node `clientCount` accuracy. Starting with
-per-node snapshot counts (conservative, safe) and evolving to cluster-aggregate counts
-(accurate) is the right phased approach.
-
----
-
-## Two Configurable Throttling Modes
-
-Based on the analysis above and the new reactive mode proposed below, the recommended
-design is two independently configurable driver modes:
-
-| Mode | Key property | Server changes needed |
-|---|---|---|
-| **Proactive** | Throttles from the very first `connect()` using `maxAdmission` and `clientCount` from `SessionInfo` | Two `int32` fields added to `SessionInfo` |
-| **Reactive** | Throttles only after observing real overload; uses `observedPeak` (adaptive effective capacity) from `SessionInfo` | `observedPeak` field added to `SessionInfo`; server tracks high-water mark with AIMD decay |
-
-Both modes share the same `AtomicInteger` concurrency counter and the same AIMD step-limited
-increase algorithm in the driver. The only difference is **where the limit comes from**:
-in proactive mode it is computed from static config (`maxAdmission`, `clientCount`); in
-reactive mode it is updated from the server's observed runtime behavior (`observedPeak`).
-
-A third option is **combined**: use `min(proactiveLimit, reactiveLimit)`. This gives
-fair-share distribution from day 1 (proactive) and automatically tightens during real
-overload events (reactive).
-
----
-
-## Option: Reactive Mode with `observedPeak` — Deep Analysis
-
-### The Idea
-
-The server tracks how many concurrent requests it was successfully serving at the moment
-an admission timeout first occurred. That observed count — not the static configured
-pool size — is what gets sent to clients as the effective capacity signal.
-
-**Example:**
-- Server is configured with `maxAdmission = 100` (HikariCP pool size).
-- In production, the database becomes slow. When the server has 51 in-flight requests,
-  the 51st times out waiting for an admission slot.
-- The server records `observedPeak = 50` (what it was handling just before the failure).
-- Clients receive `observedPeak = 50` and recalculate their local limits downward.
-- After the DB recovers and traffic flows cleanly, `observedPeak` slowly climbs back
-  toward `maxAdmission`.
-
-This is the **TCP congestion window (CWND) analogy** applied to OJP admission control:
-shrink on loss, grow slowly during clean delivery.
-
----
-
-### What the Server Would Need to Track
-
-The `SlotManager` already maintains `activeSlowOperations` and `activeFastOperations`
-as `AtomicInteger` counters that are incremented only after a semaphore is acquired
-(i.e., they reflect successfully-admitted operations, not waiting ones).
-
-To implement `observedPeak`, the server needs to add two pieces of state to `SlotManager`:
-
-1. **`highWaterMark` (AtomicInteger):** updated atomically whenever
-   `activeSlowOperations + activeFastOperations` reaches a new maximum.
-   ```java
-   // On every successful slot acquire:
-   int current = activeFastOperations.get() + activeSlowOperations.get();
-   highWaterMark.updateAndGet(prev -> Math.max(prev, current));
-   ```
-
-2. **`observedPeak` (AtomicInteger):** initialized to `totalSlots`. Updated when
-   a timeout fires (decrease) and incremented periodically on successful completions (increase).
-   ```java
-   // On admission timeout:
-   int currentActive = activeFastOperations.get() + activeSlowOperations.get();
-   observedPeak.updateAndGet(prev -> Math.min(prev, currentActive));
-
-   // On every K-th successful slot release (AIMD increase):
-   successCount.incrementAndGet();
-   if (successCount.get() % K == 0) {
-       observedPeak.updateAndGet(prev -> Math.min(totalSlots, prev + 1));
-   }
-   ```
-
-`observedPeak` is then sent in `SessionInfo` as a third `int32` field alongside
-`maxAdmission` and `clientCount`.
-
----
-
-### Pros
-
-**1. Adapts to actual server capacity, not static config**
-The configured pool size is an upper bound; the real effective throughput depends on
-DB latency, query complexity, and backend load. An `observedPeak` of 50 under heavy DB
-load is a more honest signal than `maxAdmission = 100`.
-
-**2. No client tuning required**
-The proactive mode requires operators to understand the formula and the relationship
-between pool size, client count, and concurrency limits. The reactive mode is
-self-calibrating: it just reports what worked.
-
-**3. Responds to partial degradation**
-If the DB becomes slow without completely failing, admission timeouts start occurring
-below the configured pool size. The reactive mode catches this automatically; the
-proactive mode would not, since `maxAdmission` stays at the configured value.
-
-**4. Natural floor when combined with proactive mode**
-Used together: `effectiveLimit = min(proactiveLimit, reactiveLimit)`. The proactive
-mode prevents over-loading from day 1; the reactive mode tightens the limit when
-real overload is observed. Neither mode alone is sufficient.
-
----
-
-### Cons
-
-**1. `observedPeak` reflects conditions at the moment of failure, not sustained capacity**
-If a single slow query happened to be holding a slot for 30 seconds and caused a timeout
-when the 2nd request arrived, the server would record `observedPeak = 1`. This is a
-dramatic over-reaction to a one-off event. The limit propagated to clients would be
-wildly too low.
-
-**2. The "false floor" problem — most critical risk**
-A transient event (DB GC pause, deployment, network hiccup, burst of slow queries)
-can drive `observedPeak` to a very low number. All clients then throttle hard.
-Even after the DB fully recovers, `observedPeak` stays low until the AIMD recovery
-ticks it back up. During that recovery window, the server is underutilized while
-clients wait for their limits to rise.
-
-**3. Recovery rate is hard to tune**
-- Recovery too fast → `observedPeak` rises quickly, burst risk returns.
-- Recovery too slow → clients stay under-throttled long after recovery, wasting capacity.
-- The "right" K (increment every K successful completions) depends on traffic rate,
-  which varies between deployments.
-
-**4. `observedPeak` is per-datasource but carries cross-datasource noise**
-If datasource A has a timeout because datasource B is consuming most of the server's
-thread pool, datasource A's `observedPeak` drops even though its own DB is healthy.
-This is a false signal. The `ConcurrencyThrottleInterceptor` (global gRPC gate) can
-also cause an effective admission timeout upstream; that should **not** update the
-per-datasource `observedPeak`.
-
-**5. Multiple concurrent timeouts race to update `observedPeak`**
-Under heavy load, dozens of threads may time out simultaneously and all attempt to
-update `observedPeak` at the same moment. Each thread reads a slightly different
-`currentActive` value (the count is changing as other threads complete).
-`AtomicInteger.updateAndGet(prev -> Math.min(prev, currentActive))` handles the
-CAS loop correctly, but the captured `currentActive` must be snapshotted *before*
-the CAS attempt to avoid seeing a stale value from a race.
-
-**6. Ambiguity about which timeout triggers the update**
-The `SlotManager` has three paths that result in a rejected admission:
-- Semaphore wait timeout (waited `timeoutMs`, timed out) — most meaningful.
-- Queue depth cap (`canWaitForSlot` returns false immediately) — request was not
-  admitted at all; `currentActive` at this point may be lower than `totalSlots`.
-  This is a useful signal but different in character from a wait timeout.
-- Semaphore `tryAcquire` returns false immediately (non-blocking fast-fail) — only
-  relevant in specific modes.
-
-Treating all three identically could produce confusing `observedPeak` values. The
-wait-timeout path is the most reliable signal.
-
-**7. SQS interaction: which active count to use?**
-With Slow Query Segregation enabled, the total active count is
-`activeSlow + activeFast + borrowedSlowToFast + borrowedFastToSlow`.
-A slow-lane timeout (the slow lane is full but fast lane is free) should not reduce
-`observedPeak` for the overall capacity — it reflects slow-query saturation, not
-total server overload. Whether to use lane-specific or total counts must be decided
-before implementation.
-
----
-
-### Concerns
-
-**C1 — `observedPeak` can collapse to near-zero from a single bad event**
-A database restart, a GC pause, or a single extremely slow query can cause the first
-admission timeout to fire at a very low concurrent count. Example: only 3 requests are
-in flight when a 30-second query times out. `observedPeak` drops to 3. All clients
-receive a limit of `ceil(3 / clientCount) * numOjpServers`, which may be 1 per client.
-The system is now effectively single-threaded.
-
-**Mitigation:** Set a minimum floor for `observedPeak`:
-```java
-int floor = Math.max(1, (int)(totalSlots * 0.1)); // 10% of configured capacity
-observedPeak.updateAndGet(prev -> Math.max(floor, Math.min(prev, currentActive)));
-```
-This prevents collapse to near-zero while still allowing meaningful reduction under load.
-
-**C2 — Recovery mechanism adds server-side complexity**
-The proactive mode needs no server-side AIMD — the `observedPeak` field is passively
-read from `SlotManager`. The reactive mode requires active increment logic on the server.
-This is more invasive and must be tested under concurrent load to ensure the increment
-logic doesn't itself create races or unnecessary contention.
-
-**C3 — What is the right K for AIMD increase?**
-Incrementing `observedPeak` every `totalSlots` successful releases means approximately
-one increment per "full utilization cycle". This is a reasonable default but should be
-configurable. Setting K too low (e.g., 1) means `observedPeak` recovers in seconds;
-too high (e.g., 10 × `totalSlots`) means it takes minutes.
-
-**C4 — `observedPeak` lag between nodes in multinode**
-Each node tracks its own `observedPeak`. In a 3-node cluster, if Node A is under stress
-and reports `observedPeak = 10` while Nodes B and C report `observedPeak = 50`, clients
-connected to Node A will be throttled to 1/5 of what clients on B and C can send.
-This is actually correct behavior — it reflects the real capacity distribution.
-
-**C5 — The driver still needs to handle the case `observedPeak > maxAdmission`**
-If a misconfiguration causes `observedPeak` to exceed `maxAdmission` (unlikely but
-possible during initialization), the driver should cap it at `maxAdmission`.
-
-**C6 — Does `observedPeak = 0` mean "no failures" or "completely failed"?**
-The field needs a clear sentinel. Recommendation: `observedPeak = 0` means "no failures
-observed yet — driver should use `maxAdmission` for its calculation". `observedPeak > 0`
-means "this is the observed effective capacity".
-
----
-
-### Suggestions
-
-**S1 — Initialize `observedPeak` to `maxAdmission`**
-Before any failure has been observed, `observedPeak` should equal the configured pool
-size. This makes the reactive mode equivalent to the proactive mode at startup.
-
-**S2 — Set a minimum floor at 10% of `maxAdmission`**
-Prevents total collapse from a single transient event:
-```java
+// On wait-timeout: snap observedPeak down to current active count, with 10% floor
+int currentActive = activeFastOperations.get() + activeSlowOperations.get();
 int floor = Math.max(1, (int)(totalSlots * 0.1));
+observedPeak.updateAndGet(prev -> Math.max(floor, Math.min(prev, currentActive)));
+
+// AIMD recovery: every totalSlots*2 successful releases, increment by 1
+if (successCount.incrementAndGet() % (totalSlots * 2) == 0) {
+    observedPeak.updateAndGet(prev -> Math.min(totalSlots, prev + 1));
+}
 ```
 
-**S3 — Apply AIMD on the server side (not the client side)**
-The AIMD increase logic belongs in `SlotManager`, not the driver. Each `SlotManager`
-instance independently increments `observedPeak` as its own traffic flows cleanly.
-The driver simply reads the latest value from `SessionInfo` and applies its own
-step-limited increase (from S4 of the proactive analysis) when the value grows.
+Initialized to `totalSlots`. Sent as `observedPeak` in `SessionInfo`.
+Driver uses it in the proactive formula in place of `maxAdmission`.
 
-**S4 — Send both `maxAdmission` and `observedPeak` in `SessionInfo`**
-Give clients both signals. The driver can then compute:
+**Key risks and mitigations:**
+
+| Risk | Mitigation |
+|---|---|
+| "False floor": single slow query fires timeout at low in-flight count → `observedPeak` collapses | 10% floor (`max(1, totalSlots * 0.1)`) |
+| Recovery too slow → server underutilized | K configurable via `ojp.server.admissionControl.observedPeakRecoveryFactor`; default `totalSlots × 2` |
+| Recovery too fast → burst risk | AIMD additive increase (+1 per cycle) is inherently slow |
+| SQS interaction: slow-lane timeout ≠ total overload | Use `activeSlow + activeFast` total, not per-lane counts |
+| Concurrent timeout races updating `observedPeak` | Pre-snapshot `currentActive` before CAS; `updateAndGet` handles the loop |
+| Only semaphore wait-timeout is a clean signal | Queue-depth rejections should **not** update `observedPeak` (fires before wait, may reflect low `currentActive` unrelated to capacity) |
+
+---
+
+### Combined Mode (Recommended)
+
 ```java
-int effectiveAdmission = (observedPeak > 0) ? observedPeak : maxAdmission;
-int rawLimit = (int) Math.ceil((double) effectiveAdmission / clientCount) * numOjpServers;
-int limit = Math.max(1, (int)(rawLimit * 0.9)); // 10% safety headroom
+int effectiveLimit = Math.min(proactiveLimit, reactiveLimit);
 ```
-Clients that don't understand `observedPeak` (old driver versions) fall back to
-`maxAdmission` transparently.
 
-**S5 — Use a sliding window for `observedPeak` decay**
-Instead of a strict floor, track the lowest observed failure count over the last N
-minutes. Older failures get discarded. This allows `observedPeak` to recover naturally
-as old bad events age out, without needing an explicit AIMD increment counter.
-Simpler to implement, but requires a time-based component in `SlotManager`.
-
-**S6 — Log `observedPeak` changes at WARN/INFO level**
-When `observedPeak` drops: log at WARN with the before/after count and the failure
-reason. When it recovers: log at INFO. This gives operators visibility into the
-adaptive behavior without requiring metrics tools.
+Proactive ensures fair share from day 1. Reactive tightens the limit when the DB
+is actually struggling below its configured pool size. Neither alone is sufficient.
 
 ---
 
-### Questions
+### Open Questions
 
-**Q1 — Which timeout path should update `observedPeak`?**
-The wait-timeout path (semaphore waited `timeoutMs` and expired) is the clearest
-signal. Should the queue-depth rejection path also update `observedPeak`? The queue
-rejection fires before any wait starts, so `currentActive` at that point may be lower
-than the real ceiling. Including it risks false deflation.
+**Q1 — Default configuration:** Should combined mode be on by default or off?
+Recommended: off by default (new behavior), opt-in via `ojp.jdbc.clientThrottle.mode`.
+Options: `off` (default), `proactive`, `reactive`, `combined`.
 
-**Q2 — Should `observedPeak` be per-datasource (per `SlotManager`) or also aggregate across datasources?**
-Per-datasource is the right granularity for the fair-share formula, which is also
-per-datasource. But a global `ConcurrencyThrottleInterceptor` rejection (server-global
-gRPC gate) cannot be attributed to a single datasource. Should global gRPC rejections
-set a separate global `observedConcurrencyPeak` that is used as a secondary cap?
+**Q2 — Proactive-only without `observedPeak`:** Is `clientCount` tracking worth the
+server-side overhead if reactive mode is not used? Server needs a
+`ConcurrentHashMap<connHash, Set<clientUUID>>` updated on every session create/terminate.
+Acceptable overhead for the value it provides?
 
-**Q3 — With SQS enabled, should `observedPeak` use total slots or per-lane slots?**
-A slow-lane timeout (slow lane saturated, fast lane idle) does not represent total
-server overload. Using total active count (`activeSlow + activeFast`) is safer.
-Using per-lane counts is more precise but harder to communicate to clients in a
-single integer.
+**Q3 — `observedPeak = 0` sentinel:** Means "no failure observed yet; use `maxAdmission`".
+Should a separate boolean field be clearer? Or is `0 = uninitialised` sufficient?
 
-**Q4 — What is the right K for the increment period?**
-Suggestion: default to `K = totalSlots × 2` (one increment per two full utilization
-cycles). This gives conservative recovery. Make it configurable via a new server
-property: `ojp.server.admissionControl.observedPeakRecoveryFactor`.
-
-**Q5 — Should the reactive mode be enabled independently of the proactive mode?**
-Possible configurations:
-- `proactive + reactive` (combined, recommended): uses `min(proactive, reactive)`.
-- `proactive only`: uses `maxAdmission` + `clientCount` formula.
-- `reactive only`: ignores `maxAdmission`, uses only `observedPeak`.
-- `off`: no client-side throttling.
-
----
-
-### Opinion
-
-The `observedPeak` idea is conceptually sound and directly analogous to TCP's
-congestion window (CWND): shrink on evidence of overload, grow slowly when clean.
-TCP is the gold standard for adaptive rate control and this approach borrows its
-core insight.
-
-**Confidence: High (85%) that the idea is worth implementing.** The main implementation
-risk is the "false floor" collapse (Concern C1) and the recovery rate tuning (Concern C3).
-Both are solvable, and the suggested mitigations (10% floor, configurable K, sliding
-window option) directly address them.
-
-**Recommended design for v1:**
-1. Add `observedPeak` as a third `int32` to `SessionInfo` (alongside existing `maxAdmission` and `clientCount`).
-2. Initialize `observedPeak = maxAdmission` in `SlotManager`.
-3. On wait-timeout: `observedPeak = max(floor, min(observedPeak, currentActive))`.
-4. AIMD increase: every `totalSlots × 2` successful releases, `observedPeak = min(maxAdmission, observedPeak + 1)`.
-5. Driver uses `effectiveAdmission = observedPeak` (or `maxAdmission` if `observedPeak == 0`) in the fair-share formula.
-6. Both proactive and reactive modes enabled by default; operator can turn either off.
-
-The "reactive only" mode (skip `clientCount` tracking entirely) is simpler to implement
-and may be the right first cut: clients adapt to `observedPeak` without the server
-needing to count distinct `clientUUID`s. The downside is that fairness between clients
-is not guaranteed — one greedy client can still saturate the remaining capacity.
-
----
-
-## Relationship to Existing Analysis
-
-This document is a deep dive into one specific variant described in Option Set 2 / Option 3
-("Implicit only via status codes") and Option Set 4 ("JDBC Queue and Early-Fail Policies")
-of [`JDBC_SERVER_TRIGGERED_THROTTLING_OPTIONS.md`](./JDBC_SERVER_TRIGGERED_THROTTLING_OPTIONS.md).
-
-The key difference from the other options in that document is that this approach is
-**fully client-driven** — the server does not need to send explicit throttle instructions.
-The client infers the throttle signal from existing rejection exceptions.
+**Q4 — Reactive-only (skip `clientCount`):** Simpler server-side implementation — no
+client counting needed. Downside: no fairness guarantee between clients (one greedy
+client can saturate the remaining `observedPeak` capacity). Is fairness required in v1?
 
 ---
 
 ## Summary
 
-| Dimension | Proactive Mode | Reactive Mode (`observedPeak`) | Combined |
+| Dimension | Proactive | Reactive (`observedPeak`) | Combined |
 |---|---|---|---|
-| Server changes required | Two `int32` fields in `SessionInfo` | Three `int32` fields in `SessionInfo` + server AIMD logic | Three fields + AIMD |
-| Activation | Immediately at `connect()` | After first admission timeout | Immediately, adapts on timeout |
-| Limit source | Static config (`maxAdmission`) | Observed runtime capacity | `min(proactive, reactive)` |
-| Adapts to DB load changes | No | Yes | Yes |
-| Fairness between clients | Guaranteed by formula | Not guaranteed | Guaranteed |
-| Collapse risk from transient event | Low | Medium (mitigated by 10% floor) | Low |
-| Implementation complexity | Medium | Medium–High | High |
-| Recommended | Yes (general case) | Yes (adaptive environments) | Yes (best of both) |
+| Server changes | `clientCount` + `maxAdmission` in `SessionInfo` | `observedPeak` + server AIMD in `SlotManager` | Both |
+| Activation | First `connect()` | After first admission timeout | First `connect()`, adapts on timeout |
+| Limit source | Static config | Observed runtime capacity | `min(proactive, reactive)` |
+| Adapts to DB degradation | No | Yes | Yes |
+| Fairness between clients | Guaranteed | Not guaranteed | Guaranteed |
+| Collapse risk | Low | Mitigated by 10% floor | Low |
+| Implementation complexity | Medium | Medium | Medium–High |
+| Recommended | Yes | Yes (adaptive environments) | Yes (best overall) |
+
+---
+
+## Dropped Approaches
+
+### Purely client-reactive (no server changes)
+Driver observes `RESOURCE_EXHAUSTED` / `ServerOverloadException` and activates a local
+semaphore after N consecutive rejections.
+
+**Why dropped:** Incomplete server state view, hard deactivation (requires probe logic or
+fixed cooldown), flapping between throttled/unthrottled states, no fairness between clients.
+Server already sends the signals but the driver cannot infer the right limit from them.
+Superseded by the server-cooperative approach which sends the limit explicitly.
+
+### `java.util.concurrent.Semaphore` for concurrency control
+**Why dropped:** No `setPermits()` — resizing requires draining and re-injecting permits.
+Complex, race-prone, high overhead. Replaced by `AtomicInteger` counter + `volatile int limit`.
+
+### Floor division (`maxAdmission / clientCount`)
+**Why dropped:** Permanently wastes capacity. `floor(20/7) = 2`, 6 slots idle even
+at full load. Replaced by ceiling division + 10% safety headroom.
