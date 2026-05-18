@@ -1,5 +1,29 @@
 # OJP Client-Side Throttling — Design Notes
 
+## Why Client-Side Throttling?
+
+When the OJP server's admission control is under pressure — specifically when requests
+wait longer than the configured `connectionTimeout` and result in an **admission timeout**
+— the server is already struggling. Every new request that arrives at that moment makes
+the situation worse: it extends the wait queue, competes with requests already waiting,
+and can cascade into more timeouts.
+
+Client-side throttling prevents this from happening in the first place. Instead of letting
+every client thread fire requests until the server starts rejecting them, each client
+limits its own concurrent in-flight count to its fair share of the server's real capacity.
+Shorter queues mean lower admission-wait latency, fewer timeouts, and no thundering-herd
+spikes when load increases suddenly.
+
+**Without client throttling (problem):** 50 threads across 5 app servers hit one OJP node
+at once → the node's 10-slot pool is overwhelmed → 40 requests queue or timeout → the
+server's situation gets worse, not better.
+
+**With client throttling (solution):** each app server caps itself at `ceil(10/5)×1×0.9 ≈ 1`
+concurrent request → at most 5–6 in-flight across the cluster → the pool stays within
+capacity, admission timeouts stop, and throughput is maintained.
+
+---
+
 ## Current Design: Two Configurable Modes
 
 Both modes use the same `AtomicInteger` fail-fast counter in the driver (no blocking,

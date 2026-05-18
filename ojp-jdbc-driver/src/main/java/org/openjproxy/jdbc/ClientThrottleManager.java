@@ -15,7 +15,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class ClientThrottleManager {
 
-    // 10% safety headroom: clients target 90% of their fair share to avoid bursting exactly at the limit
+    // 10% safety headroom applied after ceiling division.
+    // Ceiling division can slightly over-allocate: e.g. 20 server slots / 3 clients
+    // → ceil(20/3) = 7 per client; 3 × 7 = 21 would exceed real capacity by 1.
+    // Multiplying by 0.9 brings the per-client budget down by one slot (floor: 6),
+    // absorbing one stale clientCount value before all clients burst at the same moment.
     private static final double THROTTLE_SAFETY_MARGIN = 0.9;
 
     private final AtomicInteger inFlight = new AtomicInteger(0);
