@@ -77,7 +77,8 @@ public class AdmissionControlManager {
                                    long slowSlotTimeoutMs, long fastSlotTimeoutMs, long updateGlobalAvgIntervalSeconds,
                                    int maxWaitQueueDepth, boolean enabled) {
         this(totalSlots, slowSlotPercentage, idleTimeoutMs, slowSlotTimeoutMs, fastSlotTimeoutMs,
-                updateGlobalAvgIntervalSeconds, SlowQueryClassificationMode.RELATIVE_AVERAGE, 1000L,
+                updateGlobalAvgIntervalSeconds, QueryPerformanceMonitor.DEFAULT_CLASSIFICATION_MODE,
+                QueryPerformanceMonitor.DEFAULT_SLOW_QUERY_THRESHOLD_MS,
                 maxWaitQueueDepth, enabled);
     }
 

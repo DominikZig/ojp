@@ -83,7 +83,7 @@ class QueryPerformanceMonitorTest {
     @Test
     void testDefaultClassificationModeIsRelativeAverage() {
         assertEquals(SlowQueryClassificationMode.RELATIVE_AVERAGE, monitor.getClassificationMode());
-        assertEquals(1000L, monitor.getSlowQueryThresholdMs());
+        assertEquals(QueryPerformanceMonitor.DEFAULT_SLOW_QUERY_THRESHOLD_MS, monitor.getSlowQueryThresholdMs());
     }
 
     @Test

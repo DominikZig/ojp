@@ -119,7 +119,7 @@ public class ServerConfiguration {
     public static final long DEFAULT_SLOW_QUERY_FAST_SLOT_TIMEOUT = 60000; // 60 seconds fast slot timeout
     public static final long DEFAULT_SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL = 300; // 300 seconds (5 minutes) global average update interval
     public static final SlowQueryClassificationMode DEFAULT_SLOW_QUERY_CLASSIFICATION_MODE = SlowQueryClassificationMode.RELATIVE_AVERAGE;
-    public static final long DEFAULT_SLOW_QUERY_THRESHOLD_MS = 1000; // 1000 milliseconds
+    public static final long DEFAULT_SLOW_QUERY_THRESHOLD_MS = QueryPerformanceMonitor.DEFAULT_SLOW_QUERY_THRESHOLD_MS;
     public static final int DEFAULT_ADMISSION_CONTROL_MAX_QUEUE_DEPTH = 0; // 0 means auto-calculate from total slots
     public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 200;
     public static final String DEFAULT_DRIVERS_PATH = "./ojp-libs"; // Default external libraries directory path

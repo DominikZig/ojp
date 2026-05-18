@@ -21,6 +21,8 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @Slf4j
 public class QueryPerformanceMonitor {
+    public static final long DEFAULT_SLOW_QUERY_THRESHOLD_MS = 1000L;
+    public static final SlowQueryClassificationMode DEFAULT_CLASSIFICATION_MODE = SlowQueryClassificationMode.RELATIVE_AVERAGE;
 
     /**
      * Record for tracking operation performance metrics.
@@ -74,7 +76,7 @@ public class QueryPerformanceMonitor {
      * Creates a QueryPerformanceMonitor with default settings (always update global average).
      */
     public QueryPerformanceMonitor() {
-        this(0L, TimeProvider.SYSTEM, SlowQueryClassificationMode.RELATIVE_AVERAGE, 1000L);
+        this(0L, TimeProvider.SYSTEM, DEFAULT_CLASSIFICATION_MODE, DEFAULT_SLOW_QUERY_THRESHOLD_MS);
     }
 
     /**
@@ -85,7 +87,7 @@ public class QueryPerformanceMonitor {
      */
     public QueryPerformanceMonitor(long updateGlobalAvgIntervalSeconds) {
         this(updateGlobalAvgIntervalSeconds, TimeProvider.SYSTEM,
-                SlowQueryClassificationMode.RELATIVE_AVERAGE, 1000L);
+                DEFAULT_CLASSIFICATION_MODE, DEFAULT_SLOW_QUERY_THRESHOLD_MS);
     }
 
     /**
@@ -109,7 +111,7 @@ public class QueryPerformanceMonitor {
      * @param timeProvider provider for current time (allows mocking in tests)
      */
     public QueryPerformanceMonitor(long updateGlobalAvgIntervalSeconds, TimeProvider timeProvider) {
-        this(updateGlobalAvgIntervalSeconds, timeProvider, SlowQueryClassificationMode.RELATIVE_AVERAGE, 1000L);
+        this(updateGlobalAvgIntervalSeconds, timeProvider, DEFAULT_CLASSIFICATION_MODE, DEFAULT_SLOW_QUERY_THRESHOLD_MS);
     }
 
     /**
@@ -126,8 +128,14 @@ public class QueryPerformanceMonitor {
         this.timeProvider = timeProvider;
         this.classificationMode = classificationMode != null
                 ? classificationMode
-                : SlowQueryClassificationMode.RELATIVE_AVERAGE;
-        this.slowQueryThresholdMs = Math.max(0L, slowQueryThresholdMs);
+                : DEFAULT_CLASSIFICATION_MODE;
+        if (slowQueryThresholdMs < 0) {
+            log.warn("Invalid negative slowQueryThresholdMs={}, using default {}ms",
+                    slowQueryThresholdMs, DEFAULT_SLOW_QUERY_THRESHOLD_MS);
+            this.slowQueryThresholdMs = DEFAULT_SLOW_QUERY_THRESHOLD_MS;
+        } else {
+            this.slowQueryThresholdMs = slowQueryThresholdMs;
+        }
         this.lastGlobalAvgUpdateTime = timeProvider.currentTimeSeconds();
     }
 
@@ -221,7 +229,8 @@ public class QueryPerformanceMonitor {
 
     /**
      * Determines if an operation is classified as "slow".
-     * An operation is slow if its average execution time is 2x or greater than the overall average.
+     * RELATIVE_AVERAGE mode: operation average execution time is 2x or greater than the overall average.
+     * ABSOLUTE_THRESHOLD mode: operation average execution time is greater than or equal to the configured threshold.
      *
      * @param operationHash The hash of the SQL operation
      * @return true if the operation is classified as slow, false otherwise

@@ -207,7 +207,7 @@ A longer idle timeout (like 30 seconds) makes borrowing less aggressive, which m
 Slow-query classification supports two modes:
 
 - `RELATIVE_AVERAGE` (default): adaptive mode based on historical operation average versus overall average.
-- `ABSOLUTE_THRESHOLD`: deterministic mode based on a fixed latency boundary.
+- `ABSOLUTE_THRESHOLD`: deterministic mode based on a fixed latency boundary, with an inclusive check (`operationAverageMs >= slowQueryThresholdMs`).
 
 ```properties
 # Adaptive default mode (backward compatible)
