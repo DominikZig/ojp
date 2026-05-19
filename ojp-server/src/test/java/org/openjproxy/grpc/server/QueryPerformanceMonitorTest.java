@@ -30,6 +30,7 @@ class QueryPerformanceMonitorTest {
     void testRecordMultipleExecutionsSameOperationUsesEwma() {
         String operationHash = "test-hash-1";
 
+        // First sample sets initial average to 100
         monitor.recordExecutionTime(operationHash, 100.0);
         monitor.recordExecutionTime(operationHash, 200.0); // ((100*4)+200)/5 = 120
         monitor.recordExecutionTime(operationHash, 50.0);  // ((120*4)+50)/5 = 106

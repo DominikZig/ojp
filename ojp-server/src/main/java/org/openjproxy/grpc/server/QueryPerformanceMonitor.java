@@ -333,7 +333,8 @@ public class QueryPerformanceMonitor {
 
     private double calculatePercentile(double[] sortedValues, int percentile) {
         // Nearest-rank percentile selection (1-based rank mapped to 0-based array index).
-        // This intentionally chooses an observed fast-shape average instead of interpolation.
+        // Ceil() is used for rank so p=50 on 2 values picks rank 1 (index 0 after -1),
+        // keeping the baseline anchored to observed fast-shape values without interpolation.
         int rank = (int) Math.ceil((percentile / 100.0) * sortedValues.length) - 1;
         int index = Math.max(0, Math.min(rank, sortedValues.length - 1));
         return sortedValues[index];
