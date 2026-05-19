@@ -180,6 +180,107 @@ is documented. Combined mode (default) provides both fairness and adaptive prote
 
 ---
 
+## Using Client Throttling Together with Slow Query Segregation (SQS)
+
+Both features address database protection but at different layers:
+- **SQS** (server-side) isolates long-running queries into a dedicated slow lane so they
+  cannot starve fast queries waiting for pool slots.
+- **Client throttling** (driver-side) limits how many concurrent requests each application
+  instance sends to the server in the first place.
+
+They are complementary and work well together. The key interactions are described below.
+
+### How the two features interact
+
+**`observedPeak` and SQS classification modes:**
+
+`observedPeak` drops when any lane's admission semaphore times out
+(`activeFastOperations + activeSlowOperations` total). This total is correct and independent
+of which lane fired the timeout.
+
+With the new `RELATIVE_FAST_BASELINE` mode (the default), the slow-query threshold is set
+dynamically at `slowMultiplier × fast-lane baseline` (default 5×). During startup and
+workload transitions, the `minSamples` window (default 20 samples) must fill before
+classification begins. Until then, **all** queries compete for fast slots. If the fast lane
+becomes temporarily saturated during that warm-up window, an admission timeout will cause
+`observedPeak` to snap down — even though the server is not truly overloaded.
+
+With `ABSOLUTE_THRESHOLD` mode, the threshold is a fixed millisecond value
+(`slowQueryThresholdMs`, default 1000 ms). This produces stable, predictable classification
+and a more stable `observedPeak` signal.
+
+**`maxAdmission` and SQS slot split:**
+
+`maxAdmission` = `SlotManager.totalSlots` = full HikariCP pool size.
+When SQS is enabled with `slowSlotPercentage > 0` (default 20%), only
+`100 - slowSlotPercentage`% of those slots serve fast queries. The client throttle budget
+is computed from the full `maxAdmission`, so clients may occasionally push slightly more
+fast queries than the fast lane can absorb concurrently. This is acceptable because:
+1. Slow queries that do land in the fast lane will raise the average and eventually be
+   reclassified to the slow lane by SQS.
+2. Any resulting admission timeout will feed back through `observedPeak` to reduce the
+   client limit.
+
+### Recommendations when running both features together
+
+**1. Use `combined` throttle mode (default) — always correct with or without SQS.**
+`effectiveLimit = min(proactiveLimit, reactiveLimit)` ensures both fairness between clients
+and adaptive protection when the DB actually degrades.
+
+**2. Prefer `RELATIVE_FAST_BASELINE` mode for dynamic workloads.**
+It adapts to workload shape without manual tuning. The default parameters
+(`slowMultiplier=5.0`, `recoveryMultiplier=3.0`, `minSamples=20`, `baselinePercentile=50`,
+`baselineRefreshIntervalSeconds=10`) are well-calibrated for typical OLTP workloads.
+The 10% floor on `observedPeak` (from `MIN_OBSERVED_PEAK_RATIO`) prevents the client
+budget from collapsing to zero during the warm-up window.
+
+**3. Use `ABSOLUTE_THRESHOLD` mode for stable, well-characterised workloads.**
+If you know your SLA boundary (e.g., anything over 500 ms is slow), `ABSOLUTE_THRESHOLD`
+gives a stable classification signal that keeps `observedPeak` from fluctuating during
+load transitions. Set `ojp.server.slowQuerySegregation.slowQueryThresholdMs` accordingly.
+
+**4. On startup, expect a brief conservative period.**
+Under `RELATIVE_FAST_BASELINE`, the baseline does not exist until `minSamples` operations
+have completed. During those first N queries, everything runs in the fast lane. If you have
+a large initial burst, `observedPeak` may momentarily dip. It will recover via AIMD
+(+1 per `totalSlots × 2` releases). The 10% floor ensures clients are never throttled
+to zero.
+
+**5. `slowSlotPercentage` tuning.**
+A higher slow-slot percentage (e.g., 30%) reduces the risk of fast-lane saturation but
+slightly under-utilises the pool when all queries are fast. For typical mixed OLTP+analytics
+workloads, 20% (default) is appropriate. With client throttling active, each client already
+limits its total in-flight count, so a 20% reservation provides ample isolation.
+
+**Example configuration — mixed workload with both features:**
+
+```properties
+# Slow Query Segregation
+ojp.server.slowQuerySegregation.enabled=true
+ojp.server.slowQuerySegregation.classificationMode=RELATIVE_FAST_BASELINE
+ojp.server.slowQuerySegregation.slowMultiplier=5.0
+ojp.server.slowQuerySegregation.recoveryMultiplier=3.0
+ojp.server.slowQuerySegregation.minSamples=20
+ojp.server.slowQuerySegregation.baselinePercentile=50
+ojp.server.slowQuerySegregation.baselineRefreshIntervalSeconds=10
+
+# Client throttling (driver-side)
+ojp.jdbc.clientThrottle.mode=combined   # default — no change needed
+```
+
+**Example configuration — predictable workload (analytics batch + OLTP):**
+
+```properties
+ojp.server.slowQuerySegregation.enabled=true
+ojp.server.slowQuerySegregation.classificationMode=ABSOLUTE_THRESHOLD
+ojp.server.slowQuerySegregation.slowQueryThresholdMs=800
+ojp.server.slowQuerySegregation.slowSlotPercentage=30   # larger slow lane for analytics
+
+ojp.jdbc.clientThrottle.mode=combined
+```
+
+---
+
 ## Dropped Approaches
 
 ### Purely client-reactive (no server changes)
