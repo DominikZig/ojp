@@ -81,6 +81,12 @@ class QueryPerformanceMonitorTest {
     }
 
     @Test
+    void testDefaultClassificationModeIsRelativeAverage() {
+        assertEquals(SlowQueryClassificationMode.RELATIVE_AVERAGE, monitor.getClassificationMode());
+        assertEquals(QueryPerformanceMonitor.DEFAULT_SLOW_QUERY_THRESHOLD_MS, monitor.getSlowQueryThresholdMs());
+    }
+
+    @Test
     void testSlowOperationClassification() {
         String fastOp = "fast-operation";
         String slowOp = "slow-operation";
@@ -121,6 +127,54 @@ class QueryPerformanceMonitorTest {
         // Now the slow operation should be classified as slow (244 > 118 * 2 = 236)
         assertTrue(monitor.isSlowOperation(slowOp));
         assertFalse(monitor.isSlowOperation(fastOp));
+    }
+
+    @Test
+    void testAbsoluteThresholdClassificationBelowEqualAboveAndUnknown() {
+        QueryPerformanceMonitor absoluteMonitor = new QueryPerformanceMonitor(
+                0L, SlowQueryClassificationMode.ABSOLUTE_THRESHOLD, 1000L);
+        String belowThresholdOp = "below-threshold-op";
+        String equalThresholdOp = "equal-threshold-op";
+        String aboveThresholdOp = "above-threshold-op";
+
+        absoluteMonitor.recordExecutionTime(belowThresholdOp, 999.0);
+        absoluteMonitor.recordExecutionTime(equalThresholdOp, 1000.0);
+        absoluteMonitor.recordExecutionTime(aboveThresholdOp, 1500.0);
+
+        assertFalse(absoluteMonitor.isSlowOperation(belowThresholdOp));
+        assertTrue(absoluteMonitor.isSlowOperation(equalThresholdOp));
+        assertTrue(absoluteMonitor.isSlowOperation(aboveThresholdOp));
+        assertFalse(absoluteMonitor.isSlowOperation("unknown-op"));
+    }
+
+    @Test
+    void testRelativeAverageBehaviorStillWorks() {
+        QueryPerformanceMonitor relativeMonitor = new QueryPerformanceMonitor(
+                0L, SlowQueryClassificationMode.RELATIVE_AVERAGE, 1000L);
+        String fastOp = "fast-rel-op";
+        String slowOp = "slow-rel-op";
+
+        relativeMonitor.recordExecutionTime(fastOp, 50.0);
+        relativeMonitor.recordExecutionTime("other-fast-rel-op", 60.0);
+        relativeMonitor.recordExecutionTime(slowOp, 500.0);
+        relativeMonitor.recordExecutionTime(slowOp, 900.0);
+
+        assertTrue(relativeMonitor.isSlowOperation(slowOp));
+        assertFalse(relativeMonitor.isSlowOperation(fastOp));
+    }
+
+    @Test
+    void testAbsoluteThresholdRegressionTwoQueryShape() {
+        QueryPerformanceMonitor absoluteMonitor = new QueryPerformanceMonitor(
+                0L, SlowQueryClassificationMode.ABSOLUTE_THRESHOLD, 1000L);
+        String fastOp = "fast-shape-op";
+        String slowOp = "slow-shape-op";
+
+        absoluteMonitor.recordExecutionTime(fastOp, 10.0);
+        absoluteMonitor.recordExecutionTime(slowOp, 1000.0);
+
+        assertTrue(absoluteMonitor.isSlowOperation(slowOp));
+        assertFalse(absoluteMonitor.isSlowOperation(fastOp));
     }
 
     @Test

@@ -32,6 +32,8 @@ class ServerConfigurationTest {
         System.clearProperty("ojp.server.maxConcurrentRequests");
         System.clearProperty("ojp.server.admissionControl.maxQueueDepth");
         System.clearProperty("ojp.server.slowQuerySegregation.maxQueueDepth");
+        System.clearProperty("ojp.server.slowQuerySegregation.classificationMode");
+        System.clearProperty("ojp.server.slowQuerySegregation.slowQueryThresholdMs");
         System.clearProperty("ojp.libs.path");
         System.clearProperty("ojp.resultset.rowsPerBlock");
         TestPropertyCleanupUtils.clearStatementCacheProperties();
@@ -55,6 +57,8 @@ class ServerConfigurationTest {
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_TIMEOUT, config.getCircuitBreakerTimeout());
         assertEquals(ServerConfiguration.DEFAULT_MAX_CONCURRENT_REQUESTS, config.getMaxConcurrentRequests());
         assertEquals(ServerConfiguration.DEFAULT_ADMISSION_CONTROL_MAX_QUEUE_DEPTH, config.getAdmissionControlMaxQueueDepth());
+        assertEquals(ServerConfiguration.DEFAULT_SLOW_QUERY_CLASSIFICATION_MODE, config.getSlowQueryClassificationMode());
+        assertEquals(ServerConfiguration.DEFAULT_SLOW_QUERY_THRESHOLD_MS, config.getSlowQueryThresholdMs());
         assertEquals(ServerConfiguration.DEFAULT_CIRCUIT_BREAKER_THRESHOLD, config.getCircuitBreakerThreshold());
         assertEquals(ServerConfiguration.DEFAULT_DRIVERS_PATH, config.getDriversPath());
         assertTrue(config.isStatementCacheEnabled());
@@ -112,6 +116,28 @@ class ServerConfigurationTest {
         ServerConfiguration config = new ServerConfiguration();
 
         assertEquals(88, config.getAdmissionControlMaxQueueDepth());
+    }
+
+    @Test
+    void testSlowQueryClassificationProperties() {
+        System.setProperty("ojp.server.slowQuerySegregation.classificationMode", "ABSOLUTE_THRESHOLD");
+        System.setProperty("ojp.server.slowQuerySegregation.slowQueryThresholdMs", "2500");
+
+        ServerConfiguration config = new ServerConfiguration();
+
+        assertEquals(SlowQueryClassificationMode.ABSOLUTE_THRESHOLD, config.getSlowQueryClassificationMode());
+        assertEquals(2500L, config.getSlowQueryThresholdMs());
+    }
+
+    @Test
+    void testInvalidSlowQueryClassificationPropertiesFallbackToDefault() {
+        System.setProperty("ojp.server.slowQuerySegregation.classificationMode", "NOT_A_MODE");
+        System.setProperty("ojp.server.slowQuerySegregation.slowQueryThresholdMs", "-1");
+
+        ServerConfiguration config = new ServerConfiguration();
+
+        assertEquals(ServerConfiguration.DEFAULT_SLOW_QUERY_CLASSIFICATION_MODE, config.getSlowQueryClassificationMode());
+        assertEquals(ServerConfiguration.DEFAULT_SLOW_QUERY_THRESHOLD_MS, config.getSlowQueryThresholdMs());
     }
 
     @Test

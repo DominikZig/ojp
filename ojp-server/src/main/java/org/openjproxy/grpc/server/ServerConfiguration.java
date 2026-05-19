@@ -35,6 +35,8 @@ public class ServerConfiguration {
     private static final String SLOW_QUERY_SLOW_SLOT_TIMEOUT_KEY = "ojp.server.slowQuerySegregation.slowSlotTimeout";
     private static final String SLOW_QUERY_FAST_SLOT_TIMEOUT_KEY = "ojp.server.slowQuerySegregation.fastSlotTimeout";
     private static final String SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL_KEY = "ojp.server.slowQuerySegregation.updateGlobalAvgInterval";
+    private static final String SLOW_QUERY_CLASSIFICATION_MODE_KEY = "ojp.server.slowQuerySegregation.classificationMode";
+    private static final String SLOW_QUERY_THRESHOLD_MS_KEY = "ojp.server.slowQuerySegregation.slowQueryThresholdMs";
     private static final String ADMISSION_CONTROL_MAX_QUEUE_DEPTH_KEY = "ojp.server.admissionControl.maxQueueDepth";
     private static final String LEGACY_SLOW_QUERY_MAX_QUEUE_DEPTH_KEY = "ojp.server.slowQuerySegregation.maxQueueDepth";
     private static final String MAX_CONCURRENT_REQUESTS_KEY = "ojp.server.maxConcurrentRequests";
@@ -116,6 +118,8 @@ public class ServerConfiguration {
     public static final long DEFAULT_SLOW_QUERY_SLOW_SLOT_TIMEOUT = 120000; // 120 seconds slow slot timeout
     public static final long DEFAULT_SLOW_QUERY_FAST_SLOT_TIMEOUT = 60000; // 60 seconds fast slot timeout
     public static final long DEFAULT_SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL = 300; // 300 seconds (5 minutes) global average update interval
+    public static final SlowQueryClassificationMode DEFAULT_SLOW_QUERY_CLASSIFICATION_MODE = SlowQueryClassificationMode.RELATIVE_AVERAGE;
+    public static final long DEFAULT_SLOW_QUERY_THRESHOLD_MS = QueryPerformanceMonitor.DEFAULT_SLOW_QUERY_THRESHOLD_MS;
     public static final int DEFAULT_ADMISSION_CONTROL_MAX_QUEUE_DEPTH = 0; // 0 means auto-calculate from total slots
     public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 200;
     public static final String DEFAULT_DRIVERS_PATH = "./ojp-libs"; // Default external libraries directory path
@@ -197,6 +201,8 @@ public class ServerConfiguration {
     private final long slowQuerySlowSlotTimeout;
     private final long slowQueryFastSlotTimeout;
     private final long slowQueryUpdateGlobalAvgInterval;
+    private final SlowQueryClassificationMode slowQueryClassificationMode;
+    private final long slowQueryThresholdMs;
     private final int admissionControlMaxQueueDepth;
     private final int maxConcurrentRequests;
     private final String driversPath;
@@ -278,6 +284,9 @@ public class ServerConfiguration {
         this.slowQuerySlowSlotTimeout = getLongProperty(SLOW_QUERY_SLOW_SLOT_TIMEOUT_KEY, DEFAULT_SLOW_QUERY_SLOW_SLOT_TIMEOUT);
         this.slowQueryFastSlotTimeout = getLongProperty(SLOW_QUERY_FAST_SLOT_TIMEOUT_KEY, DEFAULT_SLOW_QUERY_FAST_SLOT_TIMEOUT);
         this.slowQueryUpdateGlobalAvgInterval = getLongProperty(SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL_KEY, DEFAULT_SLOW_QUERY_UPDATE_GLOBAL_AVG_INTERVAL);
+        this.slowQueryClassificationMode = getSlowQueryClassificationModeProperty(SLOW_QUERY_CLASSIFICATION_MODE_KEY,
+                DEFAULT_SLOW_QUERY_CLASSIFICATION_MODE);
+        this.slowQueryThresholdMs = getNonNegativeLongProperty(SLOW_QUERY_THRESHOLD_MS_KEY, DEFAULT_SLOW_QUERY_THRESHOLD_MS);
         this.admissionControlMaxQueueDepth = getNonNegativeIntProperty(ADMISSION_CONTROL_MAX_QUEUE_DEPTH_KEY,
                 getNonNegativeIntProperty(LEGACY_SLOW_QUERY_MAX_QUEUE_DEPTH_KEY, DEFAULT_ADMISSION_CONTROL_MAX_QUEUE_DEPTH));
         this.maxConcurrentRequests = getNonNegativeIntProperty(MAX_CONCURRENT_REQUESTS_KEY, DEFAULT_MAX_CONCURRENT_REQUESTS);
@@ -400,6 +409,15 @@ public class ServerConfiguration {
         return value;
     }
 
+    private long getNonNegativeLongProperty(String key, long defaultValue) {
+        long value = getLongProperty(key, defaultValue);
+        if (value < 0) {
+            logger.warn("Invalid negative value for property '{}': {}, using default: {}", key, value, defaultValue);
+            return defaultValue;
+        }
+        return value;
+    }
+
     /**
      * Gets a long property value with validation.
      */
@@ -430,6 +448,18 @@ public class ServerConfiguration {
             return Double.parseDouble(value);
         } catch (NumberFormatException e) {
             logger.warn("Invalid double value for property '{}': {}, using default: {}", key, value, defaultValue);
+            return defaultValue;
+        }
+    }
+
+    private SlowQueryClassificationMode getSlowQueryClassificationModeProperty(String key,
+                                                                               SlowQueryClassificationMode defaultValue) {
+        String rawValue = getStringProperty(key, defaultValue.name());
+        try {
+            return SlowQueryClassificationMode.valueOf(rawValue.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            logger.warn("Invalid slow query classification mode for property '{}': {}, using default: {}",
+                    key, rawValue, defaultValue);
             return defaultValue;
         }
     }
@@ -476,6 +506,10 @@ public class ServerConfiguration {
         logger.info("  Slow Query Slow Slot Timeout: {} ms", slowQuerySlowSlotTimeout);
         logger.info("  Slow Query Fast Slot Timeout: {} ms", slowQueryFastSlotTimeout);
         logger.info("  Slow Query Update Global Avg Interval: {} seconds", slowQueryUpdateGlobalAvgInterval);
+        if (slowQuerySegregationEnabled) {
+            logger.info("  SQS Classification Mode: {}", slowQueryClassificationMode);
+            logger.info("  SQS Slow Query Threshold: {} ms", slowQueryThresholdMs);
+        }
         logger.info("  Admission Control Max Queue Depth: {} (0 means auto)", admissionControlMaxQueueDepth);
         logger.info("  Max Concurrent Requests: {} (0 means unlimited)", maxConcurrentRequests);
         logger.info("  External Libraries Path: {}", driversPath);
@@ -615,6 +649,14 @@ public class ServerConfiguration {
 
     public long getSlowQueryUpdateGlobalAvgInterval() {
         return slowQueryUpdateGlobalAvgInterval;
+    }
+
+    public SlowQueryClassificationMode getSlowQueryClassificationMode() {
+        return slowQueryClassificationMode;
+    }
+
+    public long getSlowQueryThresholdMs() {
+        return slowQueryThresholdMs;
     }
 
     public int getAdmissionControlMaxQueueDepth() {

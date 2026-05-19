@@ -202,6 +202,24 @@ ojp.server.slowQuerySegregation.idleTimeout=10000
 
 A longer idle timeout (like 30 seconds) makes borrowing less aggressive, which might be appropriate if your workload has short bursts of slow queries separated by idle periods. A shorter timeout (like 5 seconds) makes the system more responsive to load changes but could cause more slot shuffling.
 
+### Classification Mode
+
+Slow-query classification supports two modes:
+
+- `RELATIVE_AVERAGE` (default): adaptive mode based on historical operation average versus overall average.
+- `ABSOLUTE_THRESHOLD`: deterministic mode based on a fixed latency boundary, with an inclusive check (`operationAverageMs >= slowQueryThresholdMs`).
+
+```properties
+# Adaptive default mode (backward compatible)
+ojp.server.slowQuerySegregation.classificationMode=RELATIVE_AVERAGE
+
+# Deterministic benchmark-friendly mode
+ojp.server.slowQuerySegregation.classificationMode=ABSOLUTE_THRESHOLD
+ojp.server.slowQuerySegregation.slowQueryThresholdMs=1000
+```
+
+Use `ABSOLUTE_THRESHOLD` when you already know what “slow” means for your workload (for example, controlled benchmarks with a fixed latency SLO).
+
 ### Complete Configuration Example
 
 Here's a complete example showing all settings with explanatory comments:
@@ -226,6 +244,10 @@ ojp.server.slowQuerySegregation.fastSlotTimeout=30000
 # Pools must be idle 15 seconds before borrowing (default: 10000)
 # Increased to prevent aggressive slot movement
 ojp.server.slowQuerySegregation.idleTimeout=15000
+
+# Deterministic classification with a fixed 1-second boundary
+ojp.server.slowQuerySegregation.classificationMode=ABSOLUTE_THRESHOLD
+ojp.server.slowQuerySegregation.slowQueryThresholdMs=1000
 ```
 
 This configuration reflects an application that runs regular reports (higher slow percentage) but wants fast queries to fail quickly if something is wrong (lower fast timeout), with conservative borrowing behavior (higher idle timeout).
