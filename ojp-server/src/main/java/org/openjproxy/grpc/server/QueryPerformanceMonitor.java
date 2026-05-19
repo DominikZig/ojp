@@ -192,7 +192,7 @@ public class QueryPerformanceMonitor {
         this.baselinePercentile = normalizeBaselinePercentile(baselinePercentile);
         this.baselineRefreshIntervalSeconds = normalizeBaselineRefreshIntervalSeconds(baselineRefreshIntervalSeconds);
         this.lastGlobalAvgUpdateTime = timeProvider.currentTimeSeconds();
-        this.lastBaselineRefreshMillis = currentTimeMillis();
+        this.lastBaselineRefreshMillis = 0L;
     }
 
     /**
@@ -329,19 +329,9 @@ public class QueryPerformanceMonitor {
     }
 
     private double calculatePercentile(double[] sortedValues, int percentile) {
-        if (sortedValues.length == 1) {
-            return sortedValues[0];
-        }
-
-        double rank = (percentile / 100.0) * (sortedValues.length - 1);
-        int lowerIndex = (int) Math.floor(rank);
-        int upperIndex = (int) Math.ceil(rank);
-        if (lowerIndex == upperIndex) {
-            return sortedValues[lowerIndex];
-        }
-
-        double weight = rank - lowerIndex;
-        return sortedValues[lowerIndex] + ((sortedValues[upperIndex] - sortedValues[lowerIndex]) * weight);
+        int rank = (int) Math.ceil((percentile / 100.0) * sortedValues.length) - 1;
+        int index = Math.max(0, Math.min(rank, sortedValues.length - 1));
+        return sortedValues[index];
     }
 
     /**
@@ -494,7 +484,7 @@ public class QueryPerformanceMonitor {
         totalOperations.set(0);
         lastGlobalAvgUpdateTime = timeProvider.currentTimeSeconds();
         fastBaselineMs = 0.0;
-        lastBaselineRefreshMillis = currentTimeMillis();
+        lastBaselineRefreshMillis = 0L;
         log.info("Performance monitor cleared");
     }
 }
