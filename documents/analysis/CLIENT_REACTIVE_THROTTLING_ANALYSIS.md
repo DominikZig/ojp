@@ -24,6 +24,24 @@ capacity, admission timeouts stop, and throughput is maintained.
 
 ---
 
+## Glossary
+
+| Acronym / Term | Full name | Meaning in this document |
+|---|---|---|
+| **AIMD** | Additive Increase, Multiplicative Decrease | Congestion-control algorithm borrowed from TCP. When overload is detected (admission timeout), the limit drops sharply (multiplicative decrease). As successful operations accumulate, the limit grows back one step at a time (additive increase). Prevents thundering-herd bursts while recovering capacity gradually. |
+| **CAS** | Compare-And-Swap | A CPU-level atomic instruction used by `AtomicInteger.incrementAndGet()`. Reads a value, computes the new value, and writes it back only if the original value is unchanged — all in one atomic step. Allows safe concurrent updates without locks. |
+| **connHash** | Connection hash | A hash of the JDBC URL + username + password that uniquely identifies a datasource/credential pair. All JDBC connections with the same URL and credentials share the same `connHash`. |
+| **clientUUID** | Client universally unique identifier | A random identifier generated once per JVM process by the OJP driver. Used by the server to count distinct application instances (JVMs) connected to a given `connHash`, as opposed to counting raw connection objects. |
+| **JDBC** | Java Database Connectivity | The standard Java API for connecting to relational databases. OJP implements this API so applications can use it as a drop-in driver. |
+| **JVM** | Java Virtual Machine | The runtime that executes Java bytecode. One JVM = one application process. Each JVM has one `clientUUID`. |
+| **OLTP** | Online Transaction Processing | Database workloads characterised by many short, fast queries (select/insert/update), as opposed to long analytical queries. The default SQS parameters are tuned for OLTP. |
+| **OJP** | Open J Proxy | This project. A JDBC Type 3 proxy driver that forwards JDBC calls over gRPC to a central server which owns the real database connection pools. |
+| **SQS** | Slow Query Segregation | An OJP server feature that routes long-running SQL queries to a dedicated "slow lane" pool, preventing them from starving fast queries waiting for connection slots. |
+| **TCP CWND** | TCP Congestion Window | TCP's built-in mechanism for avoiding network overload: grow the send window aggressively until packet loss occurs (slow start), then halve it (multiplicative decrease), then grow by one segment per round-trip (additive increase). `observedPeak` follows the same pattern applied to OJP admission slots instead of bytes. |
+| **gRPC** | Google Remote Procedure Call | The RPC framework used for communication between the OJP driver and server. Runs over HTTP/2. |
+
+---
+
 ## Current Design: Two Configurable Modes
 
 Both modes use the same `AtomicInteger` fail-fast counter in the driver (no blocking,
