@@ -163,7 +163,7 @@ public class QueryPerformanceMonitor {
                                    double recoveryMultiplier,
                                    int minSamples,
                                    int baselinePercentile,
-                                   long baselineRefreshIntervalSeconds) {
+                                   long baselineRefreshIntervalSeconds) { //NOSONAR
         this(updateGlobalAvgIntervalSeconds, TimeProvider.SYSTEM, classificationMode, slowQueryThresholdMs,
                 minimumSlowQueryMs, slowMultiplier, recoveryMultiplier, minSamples,
                 baselinePercentile, baselineRefreshIntervalSeconds);
@@ -180,7 +180,7 @@ public class QueryPerformanceMonitor {
                                    double recoveryMultiplier,
                                    int minSamples,
                                    int baselinePercentile,
-                                   long baselineRefreshIntervalSeconds) {
+                                   long baselineRefreshIntervalSeconds) { //NOSONAR
         this.updateGlobalAvgIntervalSeconds = updateGlobalAvgIntervalSeconds;
         this.timeProvider = timeProvider;
         this.classificationMode = classificationMode != null ? classificationMode : DEFAULT_CLASSIFICATION_MODE;
@@ -208,9 +208,9 @@ public class QueryPerformanceMonitor {
         PerformanceRecord newRecord = new PerformanceRecord(executionTimeMs, nowMillis);
         PerformanceRecord existingRecord = operationRecords.putIfAbsent(operationHash, newRecord);
         boolean isNewOperation = existingRecord == null;
-        PerformanceRecord record = isNewOperation ? newRecord : existingRecord;
+        PerformanceRecord operationPerformanceRecord = isNewOperation ? newRecord : existingRecord;
         if (!isNewOperation) {
-            record.updateAverage(executionTimeMs, nowMillis);
+            operationPerformanceRecord.updateAverage(executionTimeMs, nowMillis);
         }
 
         totalOperations.incrementAndGet();
@@ -220,15 +220,15 @@ public class QueryPerformanceMonitor {
         }
 
         log.debug("Updated operation {} with execution time {}ms, average now {}ms",
-                operationHash, executionTimeMs, record.getAverageExecutionTime());
+                operationHash, executionTimeMs, operationPerformanceRecord.getAverageExecutionTime());
     }
 
     /**
      * Gets average execution time for a specific operation.
      */
     public double getOperationAverageTime(String operationHash) {
-        PerformanceRecord record = operationRecords.get(operationHash);
-        return record != null ? record.getAverageExecutionTime() : 0.0;
+        PerformanceRecord operationPerformanceRecord = operationRecords.get(operationHash);
+        return operationPerformanceRecord != null ? operationPerformanceRecord.getAverageExecutionTime() : 0.0;
     }
 
     /**
@@ -242,12 +242,12 @@ public class QueryPerformanceMonitor {
      * Determines if an operation is classified as slow.
      */
     public boolean isSlowOperation(String operationHash) {
-        PerformanceRecord record = operationRecords.get(operationHash);
-        if (record == null || record.getSampleCount() < minSamples) {
+        PerformanceRecord operationPerformanceRecord = operationRecords.get(operationHash);
+        if (operationPerformanceRecord == null || operationPerformanceRecord.getSampleCount() < minSamples) {
             return false;
         }
 
-        double operationAverage = record.getAverageExecutionTime();
+        double operationAverage = operationPerformanceRecord.getAverageExecutionTime();
         if (classificationMode == SlowQueryClassificationMode.ABSOLUTE_THRESHOLD) {
             boolean isSlow = operationAverage >= slowQueryThresholdMs;
             log.debug("Operation {} classification: mode={}, average={}ms, threshold={}ms, slow={}",
@@ -255,20 +255,20 @@ public class QueryPerformanceMonitor {
             return isSlow;
         }
 
-        return classifyRelativeFastBaseline(operationHash, record, operationAverage);
+        return classifyRelativeFastBaseline(operationHash, operationPerformanceRecord, operationAverage);
     }
 
-    private boolean classifyRelativeFastBaseline(String operationHash, PerformanceRecord record, double operationAverageMs) {
+    private boolean classifyRelativeFastBaseline(String operationHash, PerformanceRecord operationPerformanceRecord, double operationAverageMs) {
         double baseline = getFastBaselineMs();
         if (baseline <= 0) {
             return false;
         }
 
-        if (record.isCurrentlyClassifiedAsSlow()) {
+        if (operationPerformanceRecord.isCurrentlyClassifiedAsSlow()) {
             boolean shouldRecover = operationAverageMs < minimumSlowQueryMs
                     || operationAverageMs <= baseline * recoveryMultiplier;
             if (shouldRecover) {
-                boolean changed = record.updateSlowClassification(false);
+                boolean changed = operationPerformanceRecord.updateSlowClassification(false);
                 if (changed) {
                     log.debug("Query recovered to fast: hash={}, avgMs={}, baselineMs={}, recoveryMultiplier={}",
                             operationHash, operationAverageMs, baseline, recoveryMultiplier);
@@ -281,7 +281,7 @@ public class QueryPerformanceMonitor {
         boolean shouldEnterSlow = operationAverageMs >= minimumSlowQueryMs
                 && operationAverageMs >= baseline * slowMultiplier;
         if (shouldEnterSlow) {
-            boolean changed = record.updateSlowClassification(true);
+            boolean changed = operationPerformanceRecord.updateSlowClassification(true);
             if (changed) {
                 log.debug("Query classified as slow: hash={}, avgMs={}, baselineMs={}, multiplier={}",
                         operationHash, operationAverageMs, baseline, slowMultiplier);
@@ -314,9 +314,9 @@ public class QueryPerformanceMonitor {
 
     private void refreshFastBaseline(long nowMillis) {
         double[] eligibleFastAverages = operationRecords.values().stream()
-                .filter(record -> record.getSampleCount() >= minSamples)
-                .filter(record -> record.getAverageExecutionTime() > 0)
-                .filter(record -> !record.isCurrentlyClassifiedAsSlow())
+                .filter(performanceRecord -> performanceRecord.getSampleCount() >= minSamples)
+                .filter(performanceRecord -> performanceRecord.getAverageExecutionTime() > 0)
+                .filter(performanceRecord -> !performanceRecord.isCurrentlyClassifiedAsSlow())
                 .mapToDouble(PerformanceRecord::getAverageExecutionTime)
                 .toArray();
 
@@ -332,6 +332,9 @@ public class QueryPerformanceMonitor {
     }
 
     private double calculatePercentile(double[] sortedValues, int percentile) {
+        if (sortedValues.length == 0) {
+            return 0.0;
+        }
         // Nearest-rank percentile selection (1-based rank mapped to 0-based array index).
         // Ceil() is used for rank so p=50 on 2 values picks rank 1 (index 0 after -1),
         // keeping the baseline anchored to observed fast-shape values without interpolation.
