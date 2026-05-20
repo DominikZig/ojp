@@ -1343,7 +1343,11 @@ Where `signal` is:
 - **Reactive mode:** use `observedPeak` (falls back to `maxAdmission` when `observedPeak == 0`).
 - **Combined mode (default):** compute both, take `min(proactiveBudget, reactiveBudget)`.
 
-The **10% headroom** exists because ceiling division can slightly over-allocate. For example: 20 slots / 3 clients = `ceil(6.67) = 7` per client; 3 × 7 = 21 would exceed capacity by 1. Multiplying by 0.9 brings it down to 6, absorbing one stale `clientCount` reading before a burst.
+The **10% headroom** exists because ceiling division can slightly over-allocate. Example: server has 20 slots, 3 clients.
+- Without headroom: `ceil(20/3) = 7` per client → 3 clients × 7 = **21** requests, exceeding the 20-slot capacity by 1.
+- With headroom: `floor(7 × 0.9) = floor(6.3) = 6` per client → 3 × 6 = **18**, safely within capacity.
+
+The extra slack also absorbs one stale `clientCount` reading (the count is updated asynchronously).
 
 **AIMD (Additive Increase, Multiplicative Decrease):** limits only change by `+1` per `SessionInfo` update when growing. They drop immediately when the signal decreases. This prevents multiple simultaneous client reconnections from all increasing their budgets at once (which would recreate the burst).
 
