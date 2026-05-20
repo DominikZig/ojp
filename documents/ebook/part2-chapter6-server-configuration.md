@@ -367,7 +367,40 @@ graph TD
     Q --> R[Adjust Classification]
 ```
 
-## 6.8 Configuration Best Practices
+## 6.8 Client Throttling Signals
+
+While client-side throttling is configured on the **driver side** (see
+[Chapter 8a: Client-Side Throttling](../ebook/part3-chapter8a-client-throttling.md)),
+the server plays an important role: it provides the signals that clients use to compute
+their per-instance limit.
+
+On every `connect()` response, the server populates three fields in `SessionInfo`:
+
+| Field | What it carries | Source |
+|---|---|---|
+| `maxAdmission` | The configured pool size on this node | `SlotManager.totalSlots` |
+| `clientCount` | Number of distinct application instances (JVMs) connected for this datasource/credential pair | `SessionManagerImpl` ref-count map |
+| `observedPeak` | Real peak in-flight count before the last admission timeout; `0` = no timeout yet | `SlotManager` AIMD tracking |
+
+The server updates `observedPeak` automatically whenever an admission timeout occurs —
+no configuration needed. By default, `observedPeak` recovers toward `maxAdmission` at a
+rate of +1 every `totalSlots × 2` successful releases. If you need to tune recovery speed,
+set `ojp.server.admissionControl.observedPeakRecoveryFactor` to a different multiplier:
+
+```bash
+# Default: recover observedPeak by +1 every (totalSlots × 2) successful releases
+-Dojp.server.admissionControl.observedPeakRecoveryFactor=2
+
+# Faster recovery (useful for bursty workloads that return to normal quickly)
+-Dojp.server.admissionControl.observedPeakRecoveryFactor=1
+
+# Slower recovery (more conservative — useful for systems that stay degraded)
+-Dojp.server.admissionControl.observedPeakRecoveryFactor=4
+```
+
+No other server-side configuration is needed to support client throttling.
+
+## 6.9 Configuration Best Practices
 
 With all these configuration options available, how do you choose the right settings? Start with the defaults—they're designed for typical workloads and provide good performance out of the box. Then adjust based on monitoring data and observed behavior. Don't preemptively tune settings based on assumptions; let your actual workload guide your configuration.
 
@@ -421,7 +454,7 @@ graph LR
     E --> C
 ```
 
-## 6.9 Configuration Validation and Troubleshooting
+## 6.10 Configuration Validation and Troubleshooting
 
 When things don't work as expected, configuration issues are often the culprit. OJP provides clear error messages when configuration values are invalid or inconsistent. The server validates configuration at startup and fails fast if critical settings are problematic.
 
