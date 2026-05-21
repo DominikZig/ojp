@@ -22,6 +22,31 @@ server's situation gets worse, not better.
 concurrent request → at most 5–6 in-flight across the cluster → the pool stays within
 capacity, admission timeouts stop, and throughput is maintained.
 
+## Simple Flow (with examples)
+
+```mermaid
+flowchart TD
+    A[Connect to OJP server] --> B[Driver receives SessionInfo<br/>maxAdmission, clientCount, observedPeak]
+    B --> C[Compute local limit<br/>ceil(effectiveAdmission/clientCount) × numServers × 0.9]
+    C --> D{Before each SQL call<br/>inFlight < limit?}
+    D -- Yes --> E[Send request to server]
+    D -- No --> F[Reject locally<br/>SQLTransientException]
+    E --> G{Server returns RESOURCE_EXHAUSTED?}
+    G -- No --> H[Release slot<br/>continue normal traffic]
+    G -- Yes --> I[Halve reactive limit<br/>AIMD decrease]
+    I --> F
+```
+
+**Example 1 (normal):**
+- Server says `maxAdmission=10`, `clientCount=5`, `numServers=1`
+- Limit = `ceil(10/5) × 1 × 0.9 = 1`
+- Each client sends up to 1 concurrent request; pressure stays low.
+
+**Example 2 (overload signal):**
+- A request gets `RESOURCE_EXHAUSTED` from server.
+- Driver halves reactive limit (for example `4 → 2`).
+- Next bursts are rejected in the client first, so fewer requests hit an overloaded server.
+
 ---
 
 ## Glossary
