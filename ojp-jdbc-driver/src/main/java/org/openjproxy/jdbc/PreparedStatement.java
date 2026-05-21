@@ -9,6 +9,7 @@ import com.openjproxy.grpc.ParameterValue;
 import com.openjproxy.grpc.ResourceType;
 import com.openjproxy.grpc.ResultType;
 import com.openjproxy.grpc.TargetCall;
+import io.grpc.StatusRuntimeException;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -110,9 +111,21 @@ public class PreparedStatement extends Statement implements java.sql.PreparedSta
         log.debug("executeQuery called");
         this.checkClosed();
         log.info("Executing query for -> {}", this.sql);
-        Iterator<OpResult> itOpResult = this.statementService
-                .executeQuery(this.connection.getSession(), this.sql, new ArrayList<>(this.paramsMap.values()), this.properties);
-        return new ResultSet(itOpResult, this.statementService, this);
+        ClientThrottleManager throttle = this.connection.getThrottleManager();
+        ClientThrottleMode mode = this.connection.getThrottleMode();
+        boolean inTransaction = !this.connection.getAutoCommit();
+        boolean acquired = acquireThrottle(throttle, mode, inTransaction);
+        try {
+            Iterator<OpResult> itOpResult = this.statementService
+                    .executeQuery(this.connection.getSession(), this.sql, new ArrayList<>(this.paramsMap.values()), this.properties);
+            return new ResultSet(itOpResult, this.statementService, this);
+        } catch (StatusRuntimeException sre) {
+            throw onServerOverload(throttle, mode, sre);
+        } finally {
+            if (acquired) {
+                throttle.release(mode, inTransaction);
+            }
+        }
     }
 
     @Override
@@ -120,13 +133,25 @@ public class PreparedStatement extends Statement implements java.sql.PreparedSta
         log.debug("executeUpdate called");
         this.checkClosed();
         log.info("Executing update for -> {}", this.sql);
-        OpResult result = this.statementService.executeUpdate(this.connection.getSession(), this.sql,
-                new ArrayList<>(this.paramsMap.values()), this.getStatementUUID(), this.properties);
-        this.connection.setSession(result.getSession());
-        if (StringUtils.isNotBlank(result.getUuid())) {
-            this.setStatementUUID(result.getUuid());
+        ClientThrottleManager throttle = this.connection.getThrottleManager();
+        ClientThrottleMode mode = this.connection.getThrottleMode();
+        boolean inTransaction = !this.connection.getAutoCommit();
+        boolean acquired = acquireThrottle(throttle, mode, inTransaction);
+        try {
+            OpResult result = this.statementService.executeUpdate(this.connection.getSession(), this.sql,
+                    new ArrayList<>(this.paramsMap.values()), this.getStatementUUID(), this.properties);
+            this.connection.setSession(result.getSession());
+            if (StringUtils.isNotBlank(result.getUuid())) {
+                this.setStatementUUID(result.getUuid());
+            }
+            return result.getIntValue();
+        } catch (StatusRuntimeException sre) {
+            throw onServerOverload(throttle, mode, sre);
+        } finally {
+            if (acquired) {
+                throttle.release(mode, inTransaction);
+            }
         }
-        return result.getIntValue();
     }
 
     @Override

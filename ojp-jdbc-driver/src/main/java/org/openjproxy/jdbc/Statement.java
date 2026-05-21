@@ -7,6 +7,8 @@ import com.openjproxy.grpc.OpResult;
 import com.openjproxy.grpc.ParameterValue;
 import com.openjproxy.grpc.ResourceType;
 import com.openjproxy.grpc.TargetCall;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -63,23 +65,84 @@ public class Statement implements java.sql.Statement {
         }
     }
 
+    /**
+     * Attempts to acquire a throttle slot before executing a statement.
+     * Returns true if a slot was acquired (caller must call releaseThrottle after the work),
+     * or false if throttling is disabled.
+     * Throws SQLTransientException immediately if the limit is reached.
+     */
+    protected boolean acquireThrottle(ClientThrottleManager throttle, ClientThrottleMode mode,
+                                    boolean inTransaction) throws SQLException {
+        if (throttle == null) {
+            return false;
+        }
+        if (!throttle.tryAcquire(mode, inTransaction)) {
+            throw new java.sql.SQLTransientException(
+                    "Client throttle limit reached; request rejected to avoid overloading the database");
+        }
+        return true;
+    }
+
+    /**
+     * If the exception is a RESOURCE_EXHAUSTED status from the server, notifies the throttle
+     * manager to halve its reactive limit (AIMD multiplicative decrease) so that the next
+     * request is rejected client-side instead of hitting the still-overloaded server.
+     * The original exception is always returned to the caller for rethrowing.
+     */
+    protected StatusRuntimeException onServerOverload(ClientThrottleManager throttle, ClientThrottleMode mode,
+                                                      StatusRuntimeException sre) {
+        if (throttle != null && mode != ClientThrottleMode.OFF
+                && sre.getStatus().getCode() == Status.Code.RESOURCE_EXHAUSTED) {
+            throttle.notifyServerOverload();
+        }
+        return sre;
+    }
+
     @Override
     public ResultSet executeQuery(String sql) throws SQLException {
         log.debug("executeQuery: {}", sql);
         checkClosed();
-        Iterator<OpResult> itResults = this.statementService.executeQuery(this.connection.getSession(), sql,
-                EMPTY_PARAMETERS_LIST, this.statementUUID, this.properties);
-        return new ResultSet(itResults, this.statementService, this);
+        ClientThrottleManager throttle = this.connection.getThrottleManager();
+        ClientThrottleMode mode = this.connection.getThrottleMode();
+        // getAutoCommit() may throw SQLException; evaluate before acquiring a slot
+        // so that release() is never called without a matching acquire.
+        boolean inTransaction = !this.connection.getAutoCommit();
+        boolean acquired = acquireThrottle(throttle, mode, inTransaction);
+        try {
+            Iterator<OpResult> itResults = this.statementService.executeQuery(this.connection.getSession(), sql,
+                    EMPTY_PARAMETERS_LIST, this.statementUUID, this.properties);
+            return new ResultSet(itResults, this.statementService, this);
+        } catch (StatusRuntimeException sre) {
+            throw onServerOverload(throttle, mode, sre);
+        } finally {
+            if (acquired) {
+                throttle.release(mode, inTransaction);
+            }
+        }
     }
 
     @Override
     public int executeUpdate(String sql) throws SQLException {
         log.debug("executeUpdate: {}", sql);
         checkClosed();
-        OpResult result = this.statementService.executeUpdate(this.connection.getSession(), sql, EMPTY_PARAMETERS_LIST,
-                this.statementUUID, this.properties);
-        this.connection.setSession(result.getSession());//TODO see if can do this in one place instead of updating session everywhere
-        return result.getIntValue();
+        ClientThrottleManager throttle = this.connection.getThrottleManager();
+        ClientThrottleMode mode = this.connection.getThrottleMode();
+        // getAutoCommit() may throw SQLException; evaluate before acquiring a slot
+        // so that release() is never called without a matching acquire.
+        boolean inTransaction = !this.connection.getAutoCommit();
+        boolean acquired = acquireThrottle(throttle, mode, inTransaction);
+        try {
+            OpResult result = this.statementService.executeUpdate(this.connection.getSession(), sql, EMPTY_PARAMETERS_LIST,
+                    this.statementUUID, this.properties);
+            this.connection.setSession(result.getSession());
+            return result.getIntValue();
+        } catch (StatusRuntimeException sre) {
+            throw onServerOverload(throttle, mode, sre);
+        } finally {
+            if (acquired) {
+                throttle.release(mode, inTransaction);
+            }
+        }
     }
 
     @Override
