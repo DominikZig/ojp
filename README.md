@@ -150,7 +150,7 @@ If Docker is not available in your environment, you can run OJP Server as a stan
 ---
 
 ## Documentation
-### High Level Solution
+### Overview
 
 <img src="documents/images/open_j_proxy_overview.png" alt="Open J Proxy Overview" />
 
