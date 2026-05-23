@@ -6,7 +6,7 @@
 
 ## 1.1 What is Open J Proxy?
 
-Open J Proxy (OJP) is a **Type 3 JDBC Driver** and **Layer 7 Proxy Server** designed to decouple applications from direct database connection management. It acts as an intelligent intermediary between your Java applications and relational databases, providing a transparent Quality-of-Service layer that optimizes connection pooling and resource utilization.
+Open J Proxy (OJP) is a **Type 3 JDBC Driver** and **Layer 7 Proxy Server** that together form a **smart database control plane** for relational databases. It acts as an intelligent intermediary between your applications and the database, providing not only connection pooling and backpressure but also a transparent Quality-of-Service layer with rich observability, client-side reactive throttling, slow-vs-fast query segregation, and built-in load balancing / failover — all behind a standard JDBC API.
 
 ### Understanding Type 3 JDBC Drivers
 
@@ -42,9 +42,9 @@ OJP operates as a **Layer 7 (Application Layer) proxy**, which means it understa
 
 ### Core Definition
 
-> **Open J Proxy is the only open-source JDBC Type 3 driver globally**, introducing a transparent Quality-of-Service layer that decouples application performance from database bottlenecks.
+> **Open J Proxy is the only open-source JDBC Type 3 driver globally**, and it uses that foundation to deliver a transparent Quality-of-Service layer — a *smart database control plane* — that decouples application performance from database bottlenecks. Beyond backpressure, OJP provides rich observability, client-side reactive throttling, slow-vs-fast query segregation, and load balancing / failover, all behind a standard JDBC API.
 
-In simple terms: **OJP sits between your application and your database, intelligently managing connections so your application can scale elastically without overwhelming your database.**
+In simple terms: **OJP sits between your applications and your databases as a programmable control plane — managing connections, throttling under pressure, segregating slow from fast queries, and exposing what the data tier is doing — so applications can scale elastically without overwhelming the database.**
 
 ---
 
