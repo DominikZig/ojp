@@ -19,6 +19,18 @@ The server supports configuration through both JVM system properties and environ
 | `ojp.server.threadPoolSize`          | `OJP_SERVER_THREADPOOLSIZE`          | int     | 200       | Fixed thread pool size when virtual threads are disabled | 0.2.0-beta |
 | `ojp.server.maxRequestSize`          | `OJP_SERVER_MAXREQUESTSIZE`          | int     | 4194304   | Maximum request size in bytes (4MB)                    | 0.2.0-beta |
 | `ojp.server.connectionIdleTimeout`   | `OJP_SERVER_CONNECTIONIDLETIMEOUT`   | long    | 30000     | Connection idle timeout in milliseconds                | 0.2.0-beta |
+| `ojp.server.maxConcurrentRequests`   | `OJP_SERVER_MAXCONCURRENTREQUESTS`   | int     | 200       | Global hard cap on concurrent in-flight gRPC calls across **all** datasources and clients. Over-limit calls are rejected with `RESOURCE_EXHAUSTED`. `0` disables the cap. Intended as **JVM self-protection, not workload shaping** — see [Global Concurrency Cap](#global-concurrency-cap-jvm-self-protection). | 0.4.0-beta |
+
+#### Global Concurrency Cap (JVM self-protection)
+
+OJP uses a layered concurrency model:
+
+- **Soft cap, per-datasource (primary backpressure).** Per-datasource admission semaphores (HikariCP slots + `ojp.server.admissionControl.maxQueueDepth` waiters, plus SQS fast/slow lanes when enabled) shape workload and isolate noisy neighbours. Almost all `RESOURCE_EXHAUSTED` rejections under normal load should come from this layer.
+- **Hard cap, global (safety net).** `ojp.server.maxConcurrentRequests` is a single process-wide gRPC in-flight counter ([`ConcurrencyThrottleInterceptor`](../../ojp-server/src/main/java/org/openjproxy/grpc/server/ConcurrencyThrottleInterceptor.java)). It protects the server JVM (gRPC threads, heap, file descriptors) from total collapse when per-datasource limits are misconfigured or when many datasources surge at once.
+
+Because the global cap is shared across all datasources and clients, tripping it rejects requests indiscriminately and can cause unrelated clients to throttle. Size it generously — a rule of thumb is **sum of per-datasource `(poolSize + maxQueueDepth)` × 1.5** — so the per-datasource caps reject first under expected load. Treat the global cap as JVM self-protection, not workload shaping; if you find yourself tuning it to shape traffic, tune the per-datasource limits instead.
+
+
 
 ### Logging Settings
 

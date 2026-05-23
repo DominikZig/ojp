@@ -36,6 +36,8 @@ The maximum request size setting provides protection against oversized requests 
 
 Connection idle timeout controls how long the server waits before closing inactive **gRPC connections** from clients. The default of 30 seconds strikes a balance between resource conservation and connection overhead. When a gRPC connection times out due to inactivity, the client automatically reconnects on demand when the next JDBC operation is requested, so there's no need for manual reconnection handling.
 
+OJP also enforces a global hard cap on concurrent in-flight gRPC calls via `ojp.server.maxConcurrentRequests` (default `200`, `0` disables). When tripped, over-limit calls are rejected with `RESOURCE_EXHAUSTED`. This cap is **shared across all datasources and all clients on the JVM**, so it is intended as JVM self-protection (gRPC threads, heap, file descriptors), not as a workload-shaping tool. Per-datasource backpressure should come from HikariCP pool sizing, `ojp.server.admissionControl.maxQueueDepth`, and SQS fast/slow lanes. As a rule of thumb, size the global cap to roughly the sum of per-datasource `(poolSize + maxQueueDepth)` × 1.5 so that the per-datasource limits reject first under expected load.
+
 **Important**: These are gRPC connection timeouts, not database connection timeouts. Each gRPC connection uses HTTP/2 multiplexing, allowing many virtual JDBC connections to share a single gRPC connection. This multiplexed architecture means one gRPC connection can handle hundreds of `getConnection()` calls from the client side.
 
 For most deployments, the default 30-second timeout works well. However, if you want to avoid frequent reconnections, consider increasing this timeout (or even disabling it with a very high value like 3600000 for 1 hour) for environments with consistent traffic patterns. The gRPC connection reestablishment is relatively lightweight, but avoiding it entirely is even better for performance.
@@ -51,6 +53,7 @@ java -Duser.timezone=UTC \
      -Dojp.server.threadPoolSize=100 \
      -Dojp.server.maxRequestSize=8388608 \
      -Dojp.server.connectionIdleTimeout=60000 \
+     -Dojp.server.maxConcurrentRequests=200 \
      -jar ojp-server.jar
 ```
 
