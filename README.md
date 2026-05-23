@@ -36,19 +36,15 @@ _"The only open-source JDBC Type 3 driver globally, this project introduces a tr
 
 ## Value Proposition
 
-OJP is a **smart database control plane** for relational databases. It is more than a connection-pool proxy: it is a programmable layer that sits between your applications and your databases and gives you operational control over how requests flow into the database — without rewriting application code.
+OJP is a **smart database control plane** for relational databases — more than a connection-pool proxy, it is a programmable layer between your applications and your databases that delivers:
 
-With minimal configuration (drop in the JDBC driver, prefix the connection URL), OJP turns a stock JDBC client into a participant in a managed data-access plane that delivers:
-
-- **Database backpressure & connection-storm protection.** A global, OJP-managed pool fronts the database, so elastic application fleets cannot exhaust connections. Over-limit requests are queued or fast-failed instead of melting the database.
-- **Client-side reactive throttling.** When the OJP server detects pressure (e.g. admission queue saturation, `RESOURCE_EXHAUSTED`), it signals clients to throttle themselves. Clients reduce concurrency on the *application side* before the database is impacted, and recover automatically as pressure subsides.
-- **Slow vs fast query segregation (SQS).** OJP classifies queries by observed latency and reserves dedicated slots so that long analytical/reporting queries cannot starve short OLTP traffic. Slot borrowing keeps utilization high when one lane is idle. See [Mixed OLTP + OLAP workloads](#mixed-oltp--olap-workloads-enable-slow-query-segregation) below.
-- **Rich observability out of the box.** OpenTelemetry traces and Prometheus metrics expose pool usage, admission queues, slow/fast classification, throttling decisions, slow-query slot pressure, and per-database health — so you can *see* what the data tier is doing instead of guessing. See [Telemetry and Observability](documents/telemetry/README.md).
-- **Load balancing & failover, built into the driver.** Multinode support is implemented in the OJP JDBC driver itself: `jdbc:ojp[host1:port1,host2:port2]_...` enables load-aware routing, automatic failover, and session stickiness across multiple OJP servers — with no extra infrastructure. See [Multinode Configuration](documents/multinode/README.md).
-- **Seamless Java integration.** Standard JDBC 4.2 API, Spring Boot starter, Quarkus and Micronaut guides, drop-in JAR. No application rewrite, no proprietary client API.
-- **Path to a universal database control plane.** The gRPC protocol that backs OJP is language-neutral. Non-Java clients (Python, Node, Go, …) can be implemented against the same control plane, giving polyglot stacks a single, consistent place to enforce backpressure, throttling, segregation, and observability across every database they share. See the [multi-language client spec](documents/multi-language-client-spec/) for the work in progress.
-
-OJP is positioned to be one of the very few — and arguably the only open-source — candidates for a truly universal database control plane: one place to apply quality-of-service policy across many databases and many client runtimes.
+- **Backpressure & connection-storm protection** — a global, OJP-managed pool fronts the database so elastic fleets cannot exhaust connections.
+- **Client-side reactive throttling** — when the server is under pressure, clients back off automatically and recover on their own.
+- **Slow vs fast query segregation (SQS)** — keeps long analytical queries from starving short OLTP traffic. See [Mixed OLTP + OLAP workloads](#mixed-oltp--olap-workloads-enable-slow-query-segregation) below.
+- **Rich observability** — OpenTelemetry traces and Prometheus metrics for pools, admission, classification and throttling. See [Telemetry and Observability](documents/telemetry/README.md).
+- **Load balancing & failover in the driver** — multinode URLs (`jdbc:ojp[host1:port1,host2:port2]_...`) with load-aware routing and session stickiness. See [Multinode Configuration](documents/multinode/README.md).
+- **Seamless Java integration** — standard JDBC 4.2, Spring Boot starter, Quarkus and Micronaut guides; no application rewrite.
+- **Path to a universal database control plane** — the gRPC protocol is language-neutral, so non-Java clients (Python, Node, Go, …) can join the same plane. See the [multi-language client spec](documents/multi-language-client-spec/).
 
 Tested support for databases: **PostgreSQL, MySQL, MariaDB, Oracle, SQL Server, DB2, and H2**. Also compatible in principle with any database that provides a JDBC driver.
 
@@ -131,61 +127,15 @@ That's it! Your application now uses intelligent connection pooling through OJP.
 
 ## Mixed OLTP + OLAP workloads — Enable Slow Query Segregation
 
-If the same database (and the same OJP server) serves **both** short interactive/OLTP queries **and** long reporting/analytical (OLAP) queries, you should enable **Slow Query Segregation (SQS)**. SQS prevents a few long-running queries from holding all the pool slots and starving fast user-facing traffic.
-
-For pure OLTP-only or pure OLAP-only deployments SQS is usually unnecessary and stays disabled by default.
-
-### How it works (in one paragraph)
-
-OJP observes the average latency of each query shape and classifies it as *fast* or *slow*. The connection pool is split into two logical lanes — by default **80% fast slots / 20% slow slots** — and each query must acquire a slot in its lane before executing. When one lane is idle, the other lane can temporarily borrow its slots, so total throughput is preserved. Full details: [Slow Query Segregation design](documents/designs/SLOW_QUERY_SEGREGATION.md).
-
-### Enable SQS on the OJP server (recommended starting point for mixed workloads)
-
-Pass these JVM properties when starting the server (Docker `-e` or JAR `-D`):
+If the same database serves **both** short OLTP queries **and** long reporting/OLAP queries, enable **Slow Query Segregation (SQS)** on the OJP server:
 
 ```bash
-java -Duser.timezone=UTC \
-     -Dojp.server.slowQuerySegregation.enabled=true \
-     -Dojp.server.slowQuerySegregation.slowSlotPercentage=20 \
-     -jar ojp-server-<version>-shaded.jar
+-Dojp.server.slowQuerySegregation.enabled=true
 ```
 
-Or with Docker:
+Or via environment variable: `OJP_SERVER_SLOWQUERYSEGREGATION_ENABLED=true`.
 
-```bash
-docker run --rm -d \
-  --network host \
-  -v $(pwd)/ojp-libs:/opt/ojp/ojp-libs \
-  -e JAVA_OPTS="-Duser.timezone=UTC \
-    -Dojp.server.slowQuerySegregation.enabled=true \
-    -Dojp.server.slowQuerySegregation.slowSlotPercentage=20" \
-  rrobetti/ojp:0.4.16-beta
-```
-
-Equivalent environment-variable form:
-
-```bash
-OJP_SERVER_SLOWQUERYSEGREGATION_ENABLED=true
-OJP_SERVER_SLOWQUERYSEGREGATION_SLOWSLOTPERCENTAGE=20
-```
-
-That single flag is all that's needed to turn SQS on. The defaults are tuned for typical mixed workloads: adaptive `RELATIVE_FAST_BASELINE` classification, 20% slow-lane slots, and idle-time slot borrowing.
-
-### Common tuning knobs
-
-| Property | Default | When to change |
-|---|---|---|
-| `ojp.server.slowQuerySegregation.slowSlotPercentage` | `20` | Increase if you have a *lot* of OLAP traffic (e.g. 30–40); decrease if OLAP is rare. |
-| `ojp.server.slowQuerySegregation.classificationMode` | `RELATIVE_FAST_BASELINE` | Switch to `ABSOLUTE_THRESHOLD` if you want a deterministic latency cutoff. |
-| `ojp.server.slowQuerySegregation.slowQueryThresholdMs` | `1000` | Used by `ABSOLUTE_THRESHOLD` mode — set to your "this is definitely a slow query" boundary in ms. |
-| `ojp.server.slowQuerySegregation.idleTimeout` | `10000` | How long a lane must be idle before its slots can be borrowed by the other lane (ms). |
-| `ojp.server.slowQuerySegregation.fastSlotTimeout` / `slowSlotTimeout` | `60000` / `120000` | Max wait time (ms) for a slot in each lane before failing fast. |
-
-See the full reference: [Slow Query Segregation Settings](documents/configuration/ojp-server-configuration.md#slow-query-segregation-settings).
-
-### Pairing SQS with client throttling
-
-For the strongest protection in mixed workloads, leave **client reactive throttling** at its default (`combined`) on the JDBC driver. When SQS is active and the slow lane fills, the server's overload signal causes clients to back off automatically, so application threads don't pile up waiting for slots. See [Client Reactive Throttling](documents/analysis/CLIENT_REACTIVE_THROTTLING_ANALYSIS.md).
+That single flag is enough — defaults are tuned for typical mixed workloads. For tuning options (slow-slot percentage, classification mode, thresholds), see [Slow Query Segregation](documents/designs/SLOW_QUERY_SEGREGATION.md) and the [server configuration reference](documents/configuration/ojp-server-configuration.md#slow-query-segregation-settings). For pure OLTP-only or pure OLAP-only deployments, leave SQS disabled (the default).
 
 ---
 
