@@ -859,25 +859,25 @@ rather than queuing and making the server's situation worse.
 The throttle mode is controlled by a single driver property:
 
 ```properties
-# Default: combined (recommended for most deployments)
-ojp.jdbc.clientThrottle.mode=combined
+# Default: reactive (most adaptive performance for most workloads)
+ojp.jdbc.clientThrottle.mode=reactive
 ```
 
 | Value | Description |
 |---|---|
-| `combined` | Uses both `maxAdmission` (static fairness) and `observedPeak` (adaptive capacity). Takes the stricter of the two limits. **Default.** |
-| `proactive` | Static fair-share limit only, based on `maxAdmission` and `clientCount`. |
-| `reactive` | Adaptive limit only, based on `observedPeak`. No fairness guarantee between clients. |
+| `reactive` | Adaptive limit only, based on `observedPeak`. **Default.** Delivers the most adaptive performance for most workloads; no fairness guarantee between clients. |
+| `combined` | Uses both `maxAdmission` (static fairness) and `observedPeak` (adaptive capacity). Takes the stricter of the two limits. Use for workloads that cannot tolerate any bursts. |
+| `proactive` | Static fair-share limit only, based on `maxAdmission` and `clientCount`. Use for workloads that cannot tolerate any bursts and where `observedPeak` cannot be trusted. |
 | `off` | Disable throttling entirely (legacy compatibility only). |
 
-For most deployments, `combined` is correct and no change is needed. The feature is on
-by default.
+For most workloads, `reactive` is correct and no change is needed. Switch to
+`combined` or `proactive` only when bursts must be strictly avoided.
 
 ### Disabling per datasource
 
 ```properties
-# Default datasource: combined throttling (no change needed)
-ojp.jdbc.clientThrottle.mode=combined
+# Default datasource: reactive throttling (no change needed)
+ojp.jdbc.clientThrottle.mode=reactive
 
 # Disable for a specific datasource (e.g., batch analytics)
 analytics.ojp.jdbc.clientThrottle.mode=off

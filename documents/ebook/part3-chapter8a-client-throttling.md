@@ -254,20 +254,20 @@ prevents a single transient slow query from collapsing all clients to near-zero 
 Set in `ojp.properties`, as an environment variable, or as a JVM system property:
 
 ```properties
-# Default: combined (recommended)
-ojp.jdbc.clientThrottle.mode=combined
+# Default: reactive (most adaptive performance for typical workloads)
+ojp.jdbc.clientThrottle.mode=reactive
 
 # Options:
 # off       — disable entirely (legacy compatibility)
 # proactive — static fair-share only
-# reactive  — adaptive observedPeak only (no fairness guarantee)
-# combined  — min(proactive, reactive) — recommended
+# reactive  — adaptive observedPeak only (default; no fairness guarantee)
+# combined  — min(proactive, reactive)
 ```
 
 Environment variable equivalent:
 
 ```bash
-export OJP_JDBC_CLIENTTHROTTLE_MODE=combined
+export OJP_JDBC_CLIENTTHROTTLE_MODE=reactive
 ```
 
 ### Disabling for a specific datasource
@@ -275,8 +275,8 @@ export OJP_JDBC_CLIENTTHROTTLE_MODE=combined
 You can disable throttling for one datasource while keeping it for others:
 
 ```properties
-# Default datasource: combined throttling
-ojp.jdbc.clientThrottle.mode=combined
+# Default datasource: reactive throttling
+ojp.jdbc.clientThrottle.mode=reactive
 
 # Analytics datasource: disable throttling (batch jobs can use full capacity)
 analytics.ojp.jdbc.clientThrottle.mode=off
@@ -284,14 +284,21 @@ analytics.ojp.jdbc.clientThrottle.mode=off
 
 ### When to change the default
 
-The `combined` default is correct for almost all deployments. Only consider changing it if:
+For most workloads, the `reactive` default delivers the most adaptive performance:
+it tracks the server's `observedPeak` and adjusts the per-client budget continuously,
+so applications run at the highest sustainable rate without manual tuning.
 
-- **`off`**: Your application already has its own concurrency control and you do not want
-  OJP adding a second layer.
-- **`proactive`**: You want fairness guarantees but do not trust `observedPeak` (e.g., your
-  DB occasionally spikes slowly but recovers, and you do not want client limits to drop).
-- **`reactive`**: You have a single-client deployment (or do not care about fairness) but
-  want the adaptive capacity signal to protect the DB.
+Consider changing it only when:
+
+- **`combined`**: Your workload **cannot tolerate any bursts**. `combined` enforces
+  `min(proactiveBudget, reactiveBudget)`, so the static fair-share cap also applies
+  on top of the adaptive signal — this keeps every client strictly inside its
+  fair share even during transient capacity spikes.
+- **`proactive`**: Your workload **cannot tolerate any bursts** and you do not trust
+  `observedPeak` (e.g., your DB occasionally spikes slowly but recovers, and you
+  do not want client limits to drop with it). Static fair-share only.
+- **`off`**: Your application already has its own concurrency control and you do not
+  want OJP adding a second layer.
 
 ---
 
@@ -344,11 +351,12 @@ ojp.server.slowQuerySegregation.enabled=true
 # classificationMode defaults to RELATIVE_FAST_BASELINE — no change needed
 
 # Client Throttling — driver side
-# ojp.jdbc.clientThrottle.mode defaults to combined — no change needed
+# ojp.jdbc.clientThrottle.mode defaults to reactive — no change needed
 ```
 
-For predictable, well-characterised workloads (e.g., analytics batch + OLTP), use
-`ABSOLUTE_THRESHOLD` for a more stable `observedPeak` signal:
+For predictable, well-characterised workloads (e.g., analytics batch + OLTP) that
+cannot tolerate any bursts, combine `ABSOLUTE_THRESHOLD` with `combined` mode for
+a more stable `observedPeak` signal plus strict static fair-share enforcement:
 
 ```properties
 ojp.server.slowQuerySegregation.enabled=true
@@ -428,16 +436,18 @@ limit its own concurrent request count to its fair share of the server's capacit
 | Limit computation | `ceil(capacity / clientCount) × numUpOjpNodes × 0.9` |
 | Enforcement | Fail-fast `AtomicInteger` counter (no blocking, near-zero overhead) |
 | Limit updates | AIMD: instant decrease, step-limited increase (`+1` per update cycle) |
-| Default mode | `combined` — both static fairness and adaptive capacity |
+| Default mode | `reactive` — adaptive capacity tracking (best for most workloads) |
 | In-transaction bypass | Yes — prevents deadlock on open transactions |
 
 **Key properties:**
 
 | Property | Default | Options |
 |---|---|---|
-| `ojp.jdbc.clientThrottle.mode` | `combined` | `off`, `proactive`, `reactive`, `combined` |
+| `ojp.jdbc.clientThrottle.mode` | `reactive` | `off`, `proactive`, `reactive`, `combined` |
 
-The feature is on by default. For most deployments, no configuration change is needed.
+The feature is on by default. For most workloads, `reactive` delivers the most
+adaptive performance with no manual tuning. Switch to `combined` or `proactive`
+only for workloads that cannot tolerate any bursts.
 
 In the next chapter, we will look at Multinode Deployment — how to run multiple OJP servers
 for high availability and greater throughput, and how client throttling interacts with node

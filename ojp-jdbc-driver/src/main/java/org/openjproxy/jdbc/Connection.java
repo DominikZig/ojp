@@ -71,7 +71,7 @@ public class Connection implements java.sql.Connection {
     }
 
     public Connection(SessionInfo session, StatementService statementService, DbName dbName, boolean closeSynchronously) {
-        this(session, statementService, dbName, closeSynchronously, ClientThrottleMode.COMBINED);
+        this(session, statementService, dbName, closeSynchronously, ClientThrottleMode.REACTIVE);
     }
 
     public Connection(SessionInfo session, StatementService statementService, DbName dbName,

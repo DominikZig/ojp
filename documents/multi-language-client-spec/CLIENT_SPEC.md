@@ -1234,7 +1234,7 @@ analytics.ojp.health.check.interval=10000
 | `ojp.datasource.name` | `"default"` | Active datasource name (sent to the server) |
 | `ojp.grpc.tls.enabled` | `false` | Enable TLS on gRPC channels |
 | `ojp.grpc.tls.cert.path` | — | Path to client certificate for mTLS |
-| `ojp.jdbc.clientThrottle.mode` | `combined` | Client throttle mode: `off`, `proactive`, `reactive`, or `combined` (see §7.14) |
+| `ojp.jdbc.clientThrottle.mode` | `reactive` | Client throttle mode: `off`, `proactive`, `reactive`, or `combined` (see §7.14) |
 
 **Duration format** — values support: no suffix = milliseconds; `ms` = milliseconds; `s` = seconds; `m` = minutes.
 
@@ -1340,8 +1340,8 @@ budget    = max(1, budget)            # always allow at least 1
 
 Where `signal` is:
 - **Proactive mode:** use `maxAdmission`.
-- **Reactive mode:** use `observedPeak` (falls back to `maxAdmission` when `observedPeak == 0`).
-- **Combined mode (default):** compute both, take `min(proactiveBudget, reactiveBudget)`.
+- **Reactive mode (default):** use `observedPeak` (falls back to `maxAdmission` when `observedPeak == 0`).
+- **Combined mode:** compute both, take `min(proactiveBudget, reactiveBudget)`.
 
 The **10% headroom** exists because ceiling division can slightly over-allocate. Example: server has 20 slots, 3 clients.
 - Without headroom: `ceil(20/3) = 7` per client → 3 clients × 7 = **21** requests, exceeding the 20-slot capacity by 1.
@@ -1357,14 +1357,16 @@ The extra slack also absorbs one stale `clientCount` reading (the count is updat
 |---|---|---|
 | Off | `off` | No throttling; all requests pass through |
 | Proactive | `proactive` | Uses `maxAdmission + clientCount` to set a static fair-share limit |
-| Reactive | `reactive` | Uses `observedPeak + clientCount` to track actual server capacity |
-| **Combined (default)** | `combined` | Uses both; the effective limit is `min(proactiveBudget, reactiveBudget)` |
+| **Reactive (default)** | `reactive` | Uses `observedPeak + clientCount` to track actual server capacity |
+| Combined | `combined` | Uses both; the effective limit is `min(proactiveBudget, reactiveBudget)` |
 
-Configure via `ojp.jdbc.clientThrottle.mode` (default: `combined`). Per-datasource override:
+Configure via `ojp.jdbc.clientThrottle.mode` (default: `reactive`). For most
+workloads, `reactive` delivers the most adaptive performance; use `combined` or
+`proactive` for workloads that cannot tolerate any bursts. Per-datasource override:
 
 ```properties
 # Global default
-ojp.jdbc.clientThrottle.mode=combined
+ojp.jdbc.clientThrottle.mode=reactive
 
 # Per-datasource override (datasource name: "analytics")
 analytics.ojp.jdbc.clientThrottle.mode=off

@@ -404,10 +404,10 @@ This prevents a "reconnect burst" where many clients simultaneously increase the
 |---|---|---|
 | Off | `off` | No throttling; `tryAcquire` always returns `true` |
 | Proactive | `proactive` | Budget from `maxAdmission + clientCount` |
-| Reactive | `reactive` | Budget from `observedPeak + clientCount`; falls back to `maxAdmission` when `observedPeak == 0` |
-| **Combined** (default) | `combined` | `min(proactiveBudget, reactiveBudget)` |
+| **Reactive** (default) | `reactive` | Budget from `observedPeak + clientCount`; falls back to `maxAdmission` when `observedPeak == 0` |
+| Combined | `combined` | `min(proactiveBudget, reactiveBudget)` |
 
-Configured via `ojp.jdbc.clientThrottle.mode` (default: `combined`). Per-datasource override via `<name>.ojp.jdbc.clientThrottle.mode`.
+Configured via `ojp.jdbc.clientThrottle.mode` (default: `reactive` — most adaptive performance for typical workloads; use `combined` or `proactive` for workloads that cannot tolerate any bursts). Per-datasource override via `<name>.ojp.jdbc.clientThrottle.mode`.
 
 ### 8.6 Concurrency Rules
 

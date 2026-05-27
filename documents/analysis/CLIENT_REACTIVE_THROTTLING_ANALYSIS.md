@@ -191,9 +191,11 @@ is actually struggling below its configured pool size. Neither alone is sufficie
 
 ### Resolved Decisions
 
-**Q1 — Default configuration:** `combined` mode on by default.
-Property `ojp.jdbc.clientThrottle.mode` defaults to `combined`.
-Options: `off`, `proactive`, `reactive`, `combined`.
+**Q1 — Default configuration:** `reactive` mode on by default.
+Property `ojp.jdbc.clientThrottle.mode` defaults to `reactive`.
+Options: `off`, `proactive`, `reactive`, `combined`. For most workloads `reactive`
+delivers the most adaptive performance; switch to `combined` or `proactive` for
+workloads that cannot tolerate any bursts.
 
 **Q2 — `clientCount` tracking:** Yes, track distinct `clientUUID` values per `connHash`.
 Server maintains `ConcurrentHashMap<connHash, Map<clientUUID, refCount>>` updated on every
@@ -204,7 +206,8 @@ sends `0`, the driver treats reactive limit as unconstrained (`Integer.MAX_VALUE
 
 **Q4 — Reactive-only fairness:** Reactive-only mode is valid for operators who only care
 about not overloading the DB and do not need fairness between clients. No-fairness caveat
-is documented. Combined mode (default) provides both fairness and adaptive protection.
+is documented. Reactive mode (default) delivers the most adaptive performance; combined
+mode adds static fairness on top for workloads that cannot tolerate any bursts.
 
 ---
 
@@ -317,7 +320,7 @@ ojp.server.slowQuerySegregation.baselinePercentile=50
 ojp.server.slowQuerySegregation.baselineRefreshIntervalSeconds=10
 
 # Client throttling (driver-side)
-ojp.jdbc.clientThrottle.mode=combined   # default — no change needed
+ojp.jdbc.clientThrottle.mode=reactive   # default — no change needed
 ```
 
 **Example configuration — predictable workload (analytics batch + OLTP):**
@@ -328,6 +331,7 @@ ojp.server.slowQuerySegregation.classificationMode=ABSOLUTE_THRESHOLD
 ojp.server.slowQuerySegregation.slowQueryThresholdMs=800
 ojp.server.slowQuerySegregation.slowSlotPercentage=30   # larger slow lane for analytics
 
+# Use combined when the workload cannot tolerate any bursts
 ojp.jdbc.clientThrottle.mode=combined
 ```
 

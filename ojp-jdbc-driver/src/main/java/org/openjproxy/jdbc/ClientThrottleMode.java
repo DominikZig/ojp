@@ -5,13 +5,13 @@ public enum ClientThrottleMode {
 
     public static ClientThrottleMode fromString(String value) {
         if (value == null) {
-            return COMBINED;
+            return REACTIVE;
         }
         switch (value.trim().toUpperCase()) {
             case "OFF": return OFF;
             case "PROACTIVE": return PROACTIVE;
-            case "REACTIVE": return REACTIVE;
-            default: return COMBINED;
+            case "COMBINED": return COMBINED;
+            default: return REACTIVE;
         }
     }
 }
