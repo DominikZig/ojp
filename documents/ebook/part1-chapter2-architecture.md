@@ -210,7 +210,7 @@ classDiagram
 <dependency>
     <groupId>org.openjproxy</groupId>
     <artifactId>ojp-jdbc-driver</artifactId>
-    <version>0.4.20-beta</version>
+    <version>0.4.21-beta</version>
 </dependency>
 ```
 
