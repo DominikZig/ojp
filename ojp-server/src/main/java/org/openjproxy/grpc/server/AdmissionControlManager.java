@@ -271,6 +271,23 @@ public class AdmissionControlManager {
     }
 
     /**
+     * Executes an operation without acquiring any admission slot, only running the
+     * performance monitor. Intended for requests whose session already holds a
+     * session-scoped {@link SessionPermit} acquired at session creation time —
+     * such sessions should not be double-counted by acquiring a per-statement slot.
+     *
+     * @param operationHash The hash of the SQL operation
+     * @param sql           The actual SQL statement text (used as metric label)
+     * @param operation     The operation to execute
+     * @param <T>           The return type of the operation
+     * @return The result of the operation
+     * @throws Exception if the operation fails
+     */
+    public <T> T executeWithMonitoringOnly(String operationHash, String sql, SegregatedOperation<T> operation) throws Exception {
+        return executeAndMonitor(operationHash, sql, operation);
+    }
+
+    /**
      * Executes an operation and monitors its performance without slot management.
      * Returns the execution time in milliseconds so the caller can record metrics.
      */
