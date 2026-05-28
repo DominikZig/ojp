@@ -178,7 +178,7 @@ public class CommandExecutionHelper {
      * control is disabled — in all of those cases the normal per-statement
      * acquisition path remains appropriate.
      */
-    private static boolean sessionHoldsPermit(ActionContext context, StatementRequest request) {
+    static boolean sessionHoldsPermit(ActionContext context, StatementRequest request) {
         try {
             if (StringUtils.isBlank(request.getSession().getSessionUUID())) {
                 return false;
