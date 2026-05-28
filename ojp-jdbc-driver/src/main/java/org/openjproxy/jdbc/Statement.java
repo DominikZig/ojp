@@ -548,7 +548,7 @@ public class Statement implements java.sql.Statement {
                 Arrays.asList(sql, columnNames));
     }
 
-    private CallResourceRequest.Builder newCallBuilder() {
+    protected CallResourceRequest.Builder newCallBuilder() {
         log.debug("newCallBuilder called");
         CallResourceRequest.Builder builder = CallResourceRequest.newBuilder()
                 .setSession(this.connection.getSession())
@@ -562,12 +562,12 @@ public class Statement implements java.sql.Statement {
         return builder;
     }
 
-    private <T> T callProxy(CallType callType, String targetName, Class<?> returnType) throws SQLException {
+    protected <T> T callProxy(CallType callType, String targetName, Class<?> returnType) throws SQLException {
         log.debug("callProxy: {}, {}, {}", callType, targetName, returnType);
         return this.callProxy(callType, targetName, returnType, Constants.EMPTY_OBJECT_LIST);
     }
 
-    private <T> T callProxy(CallType callType, String targetName, Class<?> returnType, List<Object> params) throws SQLException {
+    protected <T> T callProxy(CallType callType, String targetName, Class<?> returnType, List<Object> params) throws SQLException {
         log.debug("callProxy: {}, {}, {}, params.size={}", callType, targetName, returnType, params != null ? params.size() : 0);
         CallResourceRequest.Builder reqBuilder = this.newCallBuilder();
         reqBuilder.setTarget(

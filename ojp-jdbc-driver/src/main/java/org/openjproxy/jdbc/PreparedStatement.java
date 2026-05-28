@@ -914,7 +914,8 @@ public class PreparedStatement extends Statement implements java.sql.PreparedSta
         this.callProxy(CallType.CALL_SET, "QueryTimeout", Void.class, Arrays.asList(seconds));
     }
 
-    private CallResourceRequest.Builder newCallBuilder() throws SQLException {
+    @Override
+    protected CallResourceRequest.Builder newCallBuilder() {
         log.debug("newCallBuilder called");
         this.propertiesHaveSqlStatement();
         CallResourceRequest.Builder builder = CallResourceRequest.newBuilder()
@@ -929,12 +930,14 @@ public class PreparedStatement extends Statement implements java.sql.PreparedSta
         return builder;
     }
 
-    private <T> T callProxy(CallType callType, String targetName, Class<?> returnType) throws SQLException {
+    @Override
+    protected <T> T callProxy(CallType callType, String targetName, Class<?> returnType) throws SQLException {
         log.debug("callProxy: {}, {}, {}", callType, targetName, returnType);
         return this.callProxy(callType, targetName, returnType, Constants.EMPTY_OBJECT_LIST);
     }
 
-    private <T> T callProxy(CallType callType, String targetName, Class<?> returnType, List<Object> params) throws SQLException {
+    @Override
+    protected <T> T callProxy(CallType callType, String targetName, Class<?> returnType, List<Object> params) throws SQLException {
         log.debug("callProxy: {}, {}, {}, params.size={}", callType, targetName, returnType, params != null ? params.size() : 0);
         CallResourceRequest.Builder reqBuilder = this.newCallBuilder();
         reqBuilder.setTarget(
