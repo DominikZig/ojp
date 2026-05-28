@@ -154,7 +154,8 @@ public class AdmissionControlManager {
                 slotAcquired = slotManager.acquireFastSlot(fastSlotTimeoutMs);
                 if (!slotAcquired) {
                     throw new ServerOverloadException(
-                            "Timeout waiting for admission control slot for operation: " + operationHash);
+                            "Timeout waiting for admission control slot for operation: " + operationHash,
+                            ServerOverloadException.Lane.FAST);
                 }
                 logger.debug("Acquired admission control slot for operation: {}", operationHash);
                 threadHeldSlot.set(new HeldSlot(false));
@@ -180,7 +181,8 @@ public class AdmissionControlManager {
                 slotAcquired = slotManager.acquireSlowSlot(slowSlotTimeoutMs);
                 if (!slotAcquired) {
                     throw new ServerOverloadException(
-                            "Timeout waiting for slow operation slot for operation: " + operationHash);
+                            "Timeout waiting for slow operation slot for operation: " + operationHash,
+                            ServerOverloadException.Lane.SLOW);
                 }
                 logger.debug("Acquired slow slot for operation: {}", operationHash);
                 threadHeldSlot.set(new HeldSlot(true));
@@ -188,7 +190,8 @@ public class AdmissionControlManager {
                 slotAcquired = slotManager.acquireFastSlot(fastSlotTimeoutMs);
                 if (!slotAcquired) {
                     throw new ServerOverloadException(
-                            "Timeout waiting for fast operation slot for operation: " + operationHash);
+                            "Timeout waiting for fast operation slot for operation: " + operationHash,
+                            ServerOverloadException.Lane.FAST);
                 }
                 logger.debug("Acquired fast slot for operation: {}", operationHash);
                 threadHeldSlot.set(new HeldSlot(false));

@@ -148,4 +148,66 @@ class ClientThrottleManagerTest {
         }
         assertFalse(mgr.tryAcquire(ClientThrottleMode.REACTIVE, false));
     }
+
+    @Test
+    void slowLaneOverloadSuppressedFromReactiveDecrease() {
+        // No cooldown so a halving could otherwise fire on every call.
+        ClientThrottleManager mgr = new ClientThrottleManager(0L, 4, 0.5d, 0);
+        mgr.updateFromSessionInfo(session(40, 40, 1));
+        int before = mgr.getReactiveLimit();
+        // Slow-lane signals must NOT depress the (predominantly fast) reactive limit —
+        // cross-lane contamination fix.
+        for (int i = 0; i < 20; i++) {
+            mgr.notifyServerOverload(ClientThrottleManager.OverloadLane.SLOW);
+        }
+        assertEquals(before, mgr.getReactiveLimit(),
+                "slow-lane overload must not change the reactive limit");
+    }
+
+    @Test
+    void queueLaneOverloadSuppressedFromReactiveDecrease() {
+        ClientThrottleManager mgr = new ClientThrottleManager(0L, 4, 0.5d, 0);
+        mgr.updateFromSessionInfo(session(40, 40, 1));
+        int before = mgr.getReactiveLimit();
+        // Queue-depth overloads are transient burst signals, not saturation; suppress.
+        for (int i = 0; i < 20; i++) {
+            mgr.notifyServerOverload(ClientThrottleManager.OverloadLane.QUEUE);
+        }
+        assertEquals(before, mgr.getReactiveLimit());
+    }
+
+    @Test
+    void fastLaneOverloadStillHalves() {
+        ClientThrottleManager mgr = new ClientThrottleManager(0L, 4, 0.5d, 0);
+        mgr.updateFromSessionInfo(session(40, 40, 1));
+        int before = mgr.getReactiveLimit();
+        mgr.notifyServerOverload(ClientThrottleManager.OverloadLane.FAST);
+        assertTrue(mgr.getReactiveLimit() < before,
+                "fast-lane overload must still apply AIMD decrease");
+    }
+
+    @Test
+    void unknownLaneTreatedAsFastForSafety() {
+        // Legacy server (no trailer) — must continue to back off, otherwise reactive
+        // throttling would silently regress.
+        ClientThrottleManager mgr = new ClientThrottleManager(0L, 4, 0.5d, 0);
+        mgr.updateFromSessionInfo(session(40, 40, 1));
+        int before = mgr.getReactiveLimit();
+        mgr.notifyServerOverload(ClientThrottleManager.OverloadLane.UNKNOWN);
+        assertTrue(mgr.getReactiveLimit() < before);
+    }
+
+    @Test
+    void overloadLaneParseHandlesAllValues() {
+        assertEquals(ClientThrottleManager.OverloadLane.FAST,
+                ClientThrottleManager.OverloadLane.parse("fast"));
+        assertEquals(ClientThrottleManager.OverloadLane.SLOW,
+                ClientThrottleManager.OverloadLane.parse("SLOW"));
+        assertEquals(ClientThrottleManager.OverloadLane.QUEUE,
+                ClientThrottleManager.OverloadLane.parse("queue"));
+        assertEquals(ClientThrottleManager.OverloadLane.UNKNOWN,
+                ClientThrottleManager.OverloadLane.parse("garbage"));
+        assertEquals(ClientThrottleManager.OverloadLane.UNKNOWN,
+                ClientThrottleManager.OverloadLane.parse(null));
+    }
 }

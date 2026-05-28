@@ -319,6 +319,60 @@ public class ClientThrottleManager {
     }
 
     /**
+     * Origin of a server overload signal. Propagated via gRPC trailer
+     * {@code ojp-overload-lane}.
+     *
+     * <p>The driver applies lane-aware back-off:</p>
+     * <ul>
+     *   <li>{@code FAST} — primary concurrency budget saturated; apply normal AIMD
+     *       multiplicative decrease.</li>
+     *   <li>{@code SLOW} — slow-lane saturation; in a fast-dominated workload (e.g. 90 %
+     *       OLTP) the slow lane is decoupled from fast-query budget by design, so the
+     *       driver does <em>not</em> halve the reactive limit. This is the primary fix
+     *       for cross-lane contamination.</li>
+     *   <li>{@code QUEUE} — admission-queue depth limit, a transient burst signal rather
+     *       than a saturation signal. Skipped to avoid penalizing the steady-state limit
+     *       for brief open-loop spikes.</li>
+     *   <li>{@code UNKNOWN} — legacy / unspecified; treat as {@code FAST} for safety.</li>
+     * </ul>
+     */
+    /** gRPC trailer key name used to convey the overloaded lane (matches server-side constant). */
+    public static final String OVERLOAD_LANE_HEADER = "ojp-overload-lane";
+
+    public enum OverloadLane {
+        FAST, SLOW, QUEUE, UNKNOWN;
+
+        public static OverloadLane parse(String value) {
+            if (value == null) {
+                return UNKNOWN;
+            }
+            switch (value.trim().toLowerCase()) {
+                case "fast": return FAST;
+                case "slow": return SLOW;
+                case "queue": return QUEUE;
+                default: return UNKNOWN;
+            }
+        }
+    }
+
+    /**
+     * Lane-aware overload notification. Backwards-compatible counterpart of
+     * {@link #notifyServerOverload()} (which defaults to {@code FAST}). Implements
+     * lane-aware suppression as described on {@link OverloadLane}.
+     */
+    public void notifyServerOverload(OverloadLane lane) {
+        OverloadLane effective = lane == null ? OverloadLane.UNKNOWN : lane;
+        if (effective == OverloadLane.SLOW || effective == OverloadLane.QUEUE) {
+            // Cross-lane contamination fix: a slow-lane or queue-depth overload must not
+            // depress the (predominantly fast) client-side reactive limit. We just log
+            // and return without resetting the recovery counter.
+            log.debug("ClientThrottleManager notifyServerOverload({}): suppressed (lane decoupled)", effective);
+            return;
+        }
+        notifyServerOverload();
+    }
+
+    /**
      * Called when the server rejects a request with RESOURCE_EXHAUSTED (slot admission timeout).
      * Applies a (configurable) multiplicative decrease to the reactive limit (AIMD).
      *

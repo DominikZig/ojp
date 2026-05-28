@@ -137,7 +137,14 @@ public class ResultSet extends RemoteProxyResultSet {
 
             ClientThrottleManager throttle = connection.getThrottleManager();
             if (throttle != null) {
-                throttle.notifyServerOverload();
+                io.grpc.Metadata trailers = statusRuntimeException.getTrailers();
+                ClientThrottleManager.OverloadLane lane = ClientThrottleManager.OverloadLane.UNKNOWN;
+                if (trailers != null) {
+                    io.grpc.Metadata.Key<String> key = io.grpc.Metadata.Key.of(ClientThrottleManager.OVERLOAD_LANE_HEADER,
+                            io.grpc.Metadata.ASCII_STRING_MARSHALLER);
+                    lane = ClientThrottleManager.OverloadLane.parse(trailers.get(key));
+                }
+                throttle.notifyServerOverload(lane);
             }
         } catch (SQLException sqlException) {
             log.debug("Unable to apply client overload backoff from ResultSet path", sqlException);

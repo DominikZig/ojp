@@ -84,16 +84,36 @@ public class Statement implements java.sql.Statement {
     }
 
     /**
+     * Extracts the overload lane from a gRPC RESOURCE_EXHAUSTED trailer
+     * ({@code ojp-overload-lane}). Returns {@link ClientThrottleManager.OverloadLane#UNKNOWN}
+     * when no trailer is present (server pre-Phase-D or non-overload error).
+     */
+    private static ClientThrottleManager.OverloadLane extractLane(StatusRuntimeException sre) {
+        io.grpc.Metadata trailers = sre.getTrailers();
+        if (trailers == null) {
+            return ClientThrottleManager.OverloadLane.UNKNOWN;
+        }
+        io.grpc.Metadata.Key<String> key = io.grpc.Metadata.Key.of(ClientThrottleManager.OVERLOAD_LANE_HEADER,
+                io.grpc.Metadata.ASCII_STRING_MARSHALLER);
+        return ClientThrottleManager.OverloadLane.parse(trailers.get(key));
+    }
+
+    /**
      * If the exception is a RESOURCE_EXHAUSTED status from the server, notifies the throttle
      * manager to halve its reactive limit (AIMD multiplicative decrease) so that the next
      * request is rejected client-side instead of hitting the still-overloaded server.
      * The original exception is always returned to the caller for rethrowing.
+     *
+     * <p>Reads the {@code ojp-overload-lane} trailer (when present) and routes through
+     * {@link ClientThrottleManager#notifyServerOverload(ClientThrottleManager.OverloadLane)},
+     * which suppresses halving for slow-lane and queue-depth signals (cross-lane
+     * contamination fix).</p>
      */
     protected StatusRuntimeException onServerOverload(ClientThrottleManager throttle, ClientThrottleMode mode,
                                                       StatusRuntimeException sre) {
         if (throttle != null && mode != ClientThrottleMode.OFF
                 && sre.getStatus().getCode() == Status.Code.RESOURCE_EXHAUSTED) {
-            throttle.notifyServerOverload();
+            throttle.notifyServerOverload(extractLane(sre));
         }
         return sre;
     }

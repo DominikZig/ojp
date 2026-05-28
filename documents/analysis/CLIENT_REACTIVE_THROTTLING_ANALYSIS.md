@@ -366,3 +366,82 @@ Three native gRPC-Java mechanisms were considered:
 | `ClientInterceptor` wrapping every `newCall` | This is exactly what `ClientThrottleManager` does — gRPC provides the hook but not the pre-built implementation. There is no off-the-shelf gRPC interceptor that is informed by server-side `SessionInfo` signals (`maxAdmission`, `observedPeak`, `clientCount`). |
 
 All three lack the ability to scope the limit to a specific `connHash` and to incorporate the server's actual admission capacity into the client-side budget. The `ClientThrottleManager` approach was chosen because it uses the gRPC-recommended interceptor pattern while adding per-datasource, server-cooperative logic.
+
+---
+
+## 2026-05 Update — Reactive Throttle Hardening, Total-Slot Advertising, Per-Response Updates, Lane-Aware Overload
+
+Following stress testing that revealed the reactive limit collapsing to 1 at near-peak open-loop load (and getting stuck there because additive recovery was only fed by connect responses), the following changes were applied. They are additive and backwards-compatible.
+
+### 1. Reactive throttle hardening (driver)
+
+`ClientThrottleManager` no longer collapses to 1 from a burst of `RESOURCE_EXHAUSTED` errors.
+
+- **Cooldown:** `notifyServerOverload()` now coalesces signals received within `overloadCooldownMs` (default 200 ms) of the last effective halving. A burst of N simultaneous rejections produces one halving event, not N.
+- **Soft floor:** `reactiveLimit` is bounded below by `max(1, proactiveLimit / reactiveFloorDivisor)` (default divisor 4 → floor ≈ 25 % of proactive). It cannot be driven to 1 except in degenerate single-slot configurations.
+- **Configurable decrease factor:** the AIMD multiplicative decrease defaults to `0.5` (halving) but can be tuned, e.g. `0.75` for a gentler curve.
+- **Autonomous additive recovery:** on every successful `release()`, the manager increments a counter; after `recoverySuccessThreshold` successes (default `max(8, reactiveLimit)`) the reactive limit grows by +1, bounded by the proactive cap. This removes the prior dependency on connect responses for recovery — execute traffic alone is now enough.
+- `updateFromSessionInfo()` also respects the floor and caps `reactiveLimit` at `proactiveLimit`.
+
+Configuration keys (all optional, sane defaults):
+
+```properties
+ojp.jdbc.clientThrottle.overloadCooldownMs=200
+ojp.jdbc.clientThrottle.reactiveFloorDivisor=4
+ojp.jdbc.clientThrottle.reactiveDecreaseFactor=0.5
+# 0 = auto: max(8, reactiveLimit) successes per +1 recovery step
+ojp.jdbc.clientThrottle.recoverySuccessThreshold=0
+```
+
+### 2. `maxAdmission` advertised as `totalSlots`, not `fastSlots`
+
+`SlotManager.getEffectiveMaxAdmission()` now returns `totalSlots` (the full admission-control pool) regardless of SQS being enabled. Rationale:
+
+- Lane borrowing means a fast query can land on a slow slot and vice versa, so the realistic concurrency ceiling is the total pool size.
+- The previous behaviour understated capacity by ~20–30 % under default SQS configuration and contributed to throughput cliffs at near-peak load.
+- Cross-lane contamination is now addressed separately by lane-tagged overload notifications (see §4) instead of by shrinking the advertised budget.
+
+Implication: the proactive cap (`ceil(maxAdmission/clientCount) × numServers × 0.9`) is correspondingly larger. Operators who want to retain the old behaviour can do so by reducing `slowSlotPercentage` or by capping client pool sizes downstream.
+
+### 3. Throttle data on every response (not only connect)
+
+Previously, only `ConnectAction` populated `maxAdmission`, `observedPeak`, and `clientCount` on the outgoing `SessionInfo`. Execute and transaction responses sent an empty placeholder, and the driver-side `updateFromSessionInfo()` returned early — meaning the only source of additive recovery was new connections. Under sustained execute traffic the reactive limit could never recover from a single overload episode.
+
+Now the server stamps these three fields on:
+
+- `StartTransactionAction`, `CommitTransactionAction`, `RollbackTransactionAction`
+- `ExecuteUpdateAction` (every `OpResult`)
+- `ResultSetHelper.handleResultSet` (every result-set chunk)
+
+These flow back through the driver's `Connection.setSession()` / `ResultSet.nextWithSessionUpdate()` paths and feed `ClientThrottleManager.updateFromSessionInfo()`. The driver's existing AIMD discipline (additive +1 per update, multiplicative on overload) is preserved, but now reads fresh data on every response. Combined with §1's autonomous recovery, this provides two independent recovery channels.
+
+Two helpers were added in `SessionInfoUtils`:
+
+- `newBuilderFrom(SessionInfo, ActionContext)` — drop-in replacement for the single-arg version, stamps throttle data.
+- `enrichWithThrottle(SessionInfo, ActionContext)` — returns a copy of the input with throttle data added; used by call-sites that don't build via the builder helper.
+
+### 4. Lane-aware overload (cross-lane contamination fix)
+
+A slow-lane `RESOURCE_EXHAUSTED` would previously halve the same client-side `reactiveLimit` that throttles fast-lane traffic. In a workload dominated by short OLTP statements (e.g. 90 % OLTP / 10 % OLAP), occasional slow-lane saturation would penalise the fast lane and shrink steady-state OLTP throughput. The same applied to admission-queue-depth fail-fast rejections, which are transient burst signals rather than saturation events.
+
+Fix:
+
+- `ServerOverloadException` now carries a `Lane` ({`FAST`, `SLOW`, `QUEUE`, `UNKNOWN`}) set by `AdmissionControlManager` based on which semaphore timed out / which fail-fast branch fired.
+- `GrpcExceptionHandler.sendServerOverload(...)` attaches the lane to the gRPC trailer metadata key `ojp-overload-lane` on `Status.RESOURCE_EXHAUSTED`.
+- The driver (`Statement`, `PreparedStatement`, `ResultSet`) parses the trailer and routes through a new lane-aware overload entry point: `ClientThrottleManager.notifyServerOverload(OverloadLane)`.
+- The policy applied per lane:
+
+| Lane     | Driver behaviour                                                                |
+|----------|---------------------------------------------------------------------------------|
+| FAST     | Apply AIMD decrease (with cooldown + soft floor from §1).                       |
+| SLOW     | **Suppressed**: do not change the reactive limit. The slow lane is decoupled.   |
+| QUEUE    | **Suppressed**: transient burst signal, not saturation.                         |
+| UNKNOWN  | Treat as `FAST` for safety (preserves legacy behaviour when trailer is absent). |
+
+This is backwards-compatible: drivers connecting to older servers see no trailer and treat every overload as `UNKNOWN` ⇒ `FAST`. Servers receiving requests from older drivers still produce the trailer; the older drivers simply ignore it.
+
+#### Why not split the reactive limit per lane?
+
+A full per-lane reactive limit on the driver would require classifying each outgoing query as fast or slow client-side, which the driver doesn't reliably know (classification is server-side). The lane-aware suppression above achieves the same practical result for fast-dominated workloads without the complexity. A future iteration may introduce per-lane reactive limits with server-driven classification hints; until then, the suppression policy is the right default.
+
+
