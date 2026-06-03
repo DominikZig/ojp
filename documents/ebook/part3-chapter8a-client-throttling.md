@@ -176,8 +176,8 @@ Client throttling has three modes, configurable per application:
 | Mode | How it works | Best for |
 |---|---|---|
 | `proactive` | Uses `maxAdmission` (static pool size) to compute the limit from day 1. Guarantees fairness between clients. | Stable workloads where the pool size is a reliable capacity signal. |
-| `reactive` | Uses `observedPeak` (adaptive real capacity). Limit starts unconstrained; only tightens after the first admission timeout is observed. | Environments where the DB sometimes degrades below its configured pool size. |
-| `combined` | `effectiveLimit = min(proactive, reactive)`. Gets fairness from proactive and adaptive protection from reactive. | Recommended for most deployments (this is the **default**). |
+| `reactive` | Uses `observedPeak` (adaptive real capacity). Limit starts unconstrained; only tightens after the first admission timeout is observed. | Environments where the DB sometimes degrades below its configured pool size. (this is the **default**) |
+| `combined` | `effectiveLimit = min(proactive, reactive)`. Gets fairness from proactive and adaptive protection from reactive. | Recommended for most deployments. |
 
 ### Visual comparison
 
@@ -365,6 +365,7 @@ ojp.server.slowQuerySegregation.slowQueryThresholdMs=800
 
 ojp.jdbc.clientThrottle.mode=combined
 ```
+Be aware that combined or proactive modes are aggressive in protecting the database and in many cases might mean seeing errors earlier, for a more adaptive approach use reactive instead.
 
 ---
 
